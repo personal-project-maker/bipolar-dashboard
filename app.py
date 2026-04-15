@@ -775,12 +775,12 @@ with tab2:
             total_signals_df = form_daily[["DateLabel", "Total Signals"]].set_index("DateLabel")
             st.bar_chart(total_signals_df)
 
-        if signal_columns:
-            pretty = form_daily[["DateLabel"] + signal_columns].copy()
-            pretty = pretty.set_index("DateLabel")
+        #if signal_columns:
+            #pretty = form_daily[["DateLabel"] + signal_columns].copy()
+            #pretty = pretty.set_index("DateLabel")
 
-            st.markdown("### Individual signals")
-            st.line_chart(pretty)
+            #st.markdown("### Individual signals")
+            #st.line_chart(pretty)
 
             totals = form_daily[signal_columns].sum().sort_values(ascending=False)
             totals = totals[totals > 0]
