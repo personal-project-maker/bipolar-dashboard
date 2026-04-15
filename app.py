@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import gspread
 
-import streamlit as st
 
 def check_password():
     def password_entered():
@@ -21,6 +20,7 @@ def check_password():
     else:
         return True
 
+
 if not check_password():
     st.stop()
 
@@ -29,15 +29,16 @@ st.set_page_config(page_title="Wellbeing Dashboard", layout="wide")
 SHEET_NAME = "Bipolar Dashboard"
 FORM_TAB = "Form Responses"
 MODEL_TAB = "Model"
+QUICK_TAB = "Quick Form Responses"
 
 # Warning sensitivity settings
 DEFAULT_WARNING_SETTINGS = {
-    "high_alert": 8,          # high 1-10 score threshold
-    "low_alert": 3,           # low 1-10 score threshold
-    "change_alert": 2.0,      # minimum change vs recent average to count
-    "mood_swing_alert": 2.5,  # stronger mood shift threshold
-    "sleep_low_hours": 5.0,   # reduced sleep threshold
-    "sleep_drop_alert": 1.5,  # sharp sleep drop vs recent days
+    "high_alert": 8,
+    "low_alert": 3,
+    "change_alert": 2.0,
+    "mood_swing_alert": 2.5,
+    "sleep_low_hours": 5.0,
+    "sleep_drop_alert": 1.5,
 }
 
 # Signal groupings for summary stats
@@ -62,6 +63,29 @@ PSYCHOSIS_SIGNAL_COLUMNS = [
     "Signals and indicators [Trouble trusting perceptions and thoughts]",
 ]
 
+# Quick response symptom groupings
+QUICK_DEPRESSION_COLUMNS = [
+    "Symptoms: [Very low or depressed mood]",
+    "Symptoms: [Somewhat low or depressed mood]",
+    "Symptoms: [Social or emotional withdrawal]",
+    "Symptoms: [Feeling slowed down]",
+    "Symptoms: [Difficulty with self-care]",
+]
+
+QUICK_MANIA_COLUMNS = [
+    "Symptoms: [Very high or elevated mood]",
+    "Symptoms: [Somewhat high or elevated mood]",
+    "Symptoms: [Agitation or restlessness]",
+    "Symptoms: [Racing thoughts]",
+    "Symptoms: [Driven to activity]",
+]
+
+QUICK_PSYCHOSIS_COLUMNS = [
+    "Symptoms: [Hearing or seeing things that aren't there]",
+    "Symptoms: [Paranoia or suspicion]",
+    "Symptoms: [Firm belief in things others would not agree with]",
+]
+
 
 @st.cache_resource
 def get_gspread_client():
@@ -82,7 +106,6 @@ def load_sheet(tab_name: str) -> pd.DataFrame:
     headers = [str(h).strip() if h is not None else "" for h in data[0]]
     rows = data[1:]
 
-    # Make duplicate or blank headers unique
     seen = {}
     unique_headers = []
     for i, header in enumerate(headers):
@@ -100,8 +123,7 @@ def load_sheet(tab_name: str) -> pd.DataFrame:
     if "Timestamp" in df.columns:
         df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
         df["Date"] = df["Timestamp"].dt.date
-        df = df.drop(columns=["Timestamp"])
-        df = df.sort_values("Date")
+        df = df.sort_values("Timestamp")
 
     return df
 
@@ -137,6 +159,51 @@ def convert_form_data(df: pd.DataFrame) -> pd.DataFrame:
             .str.lower()
             .isin(["yes", "true", "1", "y", "checked"])
         )
+
+    return df
+
+
+def convert_model_data(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    if "Date" in df.columns:
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+
+    for col in df.columns:
+        if col == "Date":
+            continue
+
+        converted = pd.to_numeric(df[col], errors="coerce")
+        if converted.notna().any():
+            df[col] = converted
+
+    return df
+
+
+def convert_quick_data(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    if "Timestamp" in df.columns:
+        df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+        df["Date"] = df["Timestamp"].dt.date
+
+    quick_columns = QUICK_DEPRESSION_COLUMNS + QUICK_MANIA_COLUMNS + QUICK_PSYCHOSIS_COLUMNS
+
+    def score_response(val):
+        text = str(val).strip().lower()
+        if text == "yes":
+            return 2
+        if text == "somewhat":
+            return 1
+        if text == "no":
+            return 0
+        return 0
+
+    for col in quick_columns:
+        if col in df.columns:
+            df[col] = df[col].apply(score_response)
 
     return df
 
@@ -180,24 +247,6 @@ def make_daily_form_data(df: pd.DataFrame) -> pd.DataFrame:
     return daily
 
 
-def convert_model_data(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-
-    if "Date" in df.columns:
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
-
-    for col in df.columns:
-        if col == "Date":
-            continue
-
-        converted = pd.to_numeric(df[col], errors="coerce")
-        if converted.notna().any():
-            df[col] = converted
-
-    return df
-
-
 def make_daily_model_data(df: pd.DataFrame) -> pd.DataFrame:
     if "Date" not in df.columns:
         return pd.DataFrame()
@@ -211,6 +260,50 @@ def make_daily_model_data(df: pd.DataFrame) -> pd.DataFrame:
     daily["DateLabel"] = pd.to_datetime(daily["Date"]).dt.strftime("%Y-%m-%d")
 
     return daily
+
+
+def make_quick_summary_data(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    depression_cols = [c for c in QUICK_DEPRESSION_COLUMNS if c in df.columns]
+    mania_cols = [c for c in QUICK_MANIA_COLUMNS if c in df.columns]
+    psychosis_cols = [c for c in QUICK_PSYCHOSIS_COLUMNS if c in df.columns]
+
+    working = df.copy()
+
+    working["Depression Score"] = working[depression_cols].sum(axis=1) if depression_cols else 0
+    working["Mania Score"] = working[mania_cols].sum(axis=1) if mania_cols else 0
+    working["Psychosis Score"] = working[psychosis_cols].sum(axis=1) if psychosis_cols else 0
+    working["Overall Score"] = (
+        working["Depression Score"] + working["Mania Score"] + working["Psychosis Score"]
+    )
+
+    if "Timestamp" in working.columns:
+        working = working.sort_values("Timestamp")
+        working["DateLabel"] = working["Timestamp"].dt.strftime("%Y-%m-%d %H:%M")
+        return working[[
+            "Timestamp",
+            "DateLabel",
+            "Overall Score",
+            "Mania Score",
+            "Depression Score",
+            "Psychosis Score",
+        ]]
+
+    if "Date" in working.columns:
+        working = working.sort_values("Date")
+        working["DateLabel"] = pd.to_datetime(working["Date"]).dt.strftime("%Y-%m-%d")
+        return working[[
+            "Date",
+            "DateLabel",
+            "Overall Score",
+            "Mania Score",
+            "Depression Score",
+            "Psychosis Score",
+        ]]
+
+    return pd.DataFrame()
 
 
 def latest_value(df: pd.DataFrame, col: str):
@@ -360,7 +453,6 @@ def build_warning_scores(form_daily: pd.DataFrame, settings: dict) -> dict:
     SLEEP_LOW_HOURS = settings["sleep_low_hours"]
     SLEEP_DROP_ALERT = settings["sleep_drop_alert"]
 
-    # UP / MANIA
     if latest_sleep is not None and latest_sleep <= SLEEP_LOW_HOURS:
         up_score += 18
         reasons_up.append("Sleep is clearly reduced")
@@ -429,7 +521,6 @@ def build_warning_scores(form_daily: pd.DataFrame, settings: dict) -> dict:
         up_score += 8
         reasons_up.append("Suspiciousness is very elevated")
 
-    # DOWN / DEPRESSION
     if latest_mood is not None and latest_mood <= LOW_ALERT:
         down_score += 20
         reasons_down.append("Mood score is clearly low")
@@ -466,7 +557,6 @@ def build_warning_scores(form_daily: pd.DataFrame, settings: dict) -> dict:
         down_score += 20
         reasons_down.append("You marked that a down may be coming")
 
-    # MIXED / INSTABILITY
     if latest_sleep is not None and latest_sleep <= SLEEP_LOW_HOURS:
         mixed_score += 14
         reasons_mixed.append("Sleep is clearly reduced")
@@ -656,16 +746,16 @@ def render_settings_panel():
             )
 
 
-# Initialize settings once
 if "warning_settings" not in st.session_state:
     st.session_state["warning_settings"] = DEFAULT_WARNING_SETTINGS.copy()
 
-# Load data
 form_df = convert_form_data(load_sheet(FORM_TAB))
 model_df = convert_model_data(load_sheet(MODEL_TAB))
+quick_df = convert_quick_data(load_sheet(QUICK_TAB))
 
 form_daily = make_daily_form_data(form_df)
 model_daily = make_daily_model_data(model_df)
+quick_summary = make_quick_summary_data(quick_df)
 
 render_settings_panel()
 warning_scores = build_warning_scores(form_daily, st.session_state["warning_settings"])
@@ -698,11 +788,12 @@ with b2:
 with b3:
     render_banner("Mixed / Instability Risk", warning_scores["mixed_score"])
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "Daily Trends",
     "Signals by Day",
     "Warnings",
     "Model",
+    "Quick Responses",
     "Form Data",
     "Model Data",
 ])
@@ -775,23 +866,16 @@ with tab2:
             total_signals_df = form_daily[["DateLabel", "Total Signals"]].set_index("DateLabel")
             st.bar_chart(total_signals_df)
 
-        #if signal_columns:
-            #pretty = form_daily[["DateLabel"] + signal_columns].copy()
-            #pretty = pretty.set_index("DateLabel")
+        totals = form_daily[signal_columns].sum().sort_values(ascending=False)
+        totals = totals[totals > 0]
 
-            #st.markdown("### Individual signals")
-            #st.line_chart(pretty)
-
-            totals = form_daily[signal_columns].sum().sort_values(ascending=False)
-            totals = totals[totals > 0]
-
-            if not totals.empty:
-                totals.index = [
-                    c.replace("Signals and indicators [", "").replace("]", "")
-                    for c in totals.index
-                ]
-                st.markdown("### Signal totals")
-                st.bar_chart(totals)
+        if not totals.empty:
+            totals.index = [
+                c.replace("Signals and indicators [", "").replace("]", "")
+                for c in totals.index
+            ]
+            st.markdown("### Signal totals")
+            st.bar_chart(totals)
     else:
         st.info("No signal data available.")
 
@@ -880,9 +964,39 @@ with tab4:
         st.info("The Model tab loaded, but I couldn't find daily numeric columns to chart.")
 
 with tab5:
+    st.subheader("Quick form responses")
+
+    if not quick_summary.empty:
+        st.markdown("### Overall symptom load")
+        overall_chart = quick_summary[["DateLabel", "Overall Score"]].set_index("DateLabel")
+        st.line_chart(overall_chart)
+
+        q1, q2, q3 = st.columns(3)
+
+        with q1:
+            st.markdown("### Mania")
+            mania_chart = quick_summary[["DateLabel", "Mania Score"]].set_index("DateLabel")
+            st.line_chart(mania_chart)
+
+        with q2:
+            st.markdown("### Depression")
+            depression_chart = quick_summary[["DateLabel", "Depression Score"]].set_index("DateLabel")
+            st.line_chart(depression_chart)
+
+        with q3:
+            st.markdown("### Psychosis")
+            psychosis_chart = quick_summary[["DateLabel", "Psychosis Score"]].set_index("DateLabel")
+            st.line_chart(psychosis_chart)
+
+        st.markdown("### Quick response data")
+        st.dataframe(quick_summary, use_container_width=True)
+    else:
+        st.info("No quick form response data available.")
+
+with tab6:
     st.subheader("Raw Form Responses")
     st.dataframe(form_df, use_container_width=True)
 
-with tab6:
+with tab7:
     st.subheader("Raw Model Data")
     st.dataframe(model_df, use_container_width=True)
