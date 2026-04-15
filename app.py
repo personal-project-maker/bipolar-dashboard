@@ -41,7 +41,7 @@ DEFAULT_WARNING_SETTINGS = {
     "sleep_drop_alert": 1.5,
 }
 
-# Signal groupings for summary stats
+# Signal groupings
 MANIA_SIGNAL_COLUMNS = [
     "Signals and indicators [Needed less sleep than usual without feeling tired]",
     "Signals and indicators [Started more activities than usual]",
@@ -56,11 +56,18 @@ DEPRESSION_SIGNAL_COLUMNS = [
     "Signals and indicators [Avoided normal responsiblities]",
 ]
 
-PSYCHOSIS_SIGNAL_COLUMNS = [
+PARANOIA_SIGNAL_COLUMNS = [
     "Signals and indicators [Heard or saw something others didn't]",
     "Signals and indicators [Felt watched, followed, targeted]",
     "Signals and indicators [Felt something had special meaning for me]",
     "Signals and indicators [Trouble trusting perceptions and thoughts]",
+]
+
+MIXED_SIGNAL_COLUMNS = [
+    "Signals and indicators [Feel like I'm experiencing a mixed]",
+    "Signals and indicators [Feel like I'm going to experience a mixed]",
+    "Signals and indicators [Noticed a sudden mood shift]",
+    'Signals and indicators [Felt "not like myself"]',
 ]
 
 # Quick response symptom groupings
@@ -304,6 +311,74 @@ def make_quick_summary_data(df: pd.DataFrame) -> pd.DataFrame:
         ]]
 
     return pd.DataFrame()
+
+
+def make_signal_cluster_totals(form_daily: pd.DataFrame) -> pd.Series:
+    if form_daily.empty:
+        return pd.Series(dtype=float)
+
+    signal_columns = [c for c in form_daily.columns if c.startswith("Signals and indicators [")]
+
+    def safe_sum(columns):
+        available = [c for c in columns if c in form_daily.columns]
+        if not available:
+            return 0
+        return form_daily[available].sum().sum()
+
+    used = set(MANIA_SIGNAL_COLUMNS + DEPRESSION_SIGNAL_COLUMNS + PARANOIA_SIGNAL_COLUMNS + MIXED_SIGNAL_COLUMNS)
+    other_columns = [c for c in signal_columns if c not in used]
+
+    cluster_totals = pd.Series({
+        "Mania": safe_sum(MANIA_SIGNAL_COLUMNS),
+        "Depression": safe_sum(DEPRESSION_SIGNAL_COLUMNS),
+        "Paranoia": safe_sum(PARANOIA_SIGNAL_COLUMNS),
+        "Mixed": safe_sum(MIXED_SIGNAL_COLUMNS),
+        "Other": safe_sum(other_columns),
+    })
+
+    return cluster_totals[cluster_totals > 0]
+
+
+def make_model_cluster_data(model_daily: pd.DataFrame) -> pd.DataFrame:
+    if model_daily.empty:
+        return pd.DataFrame()
+
+    working = model_daily.copy()
+
+    working["Mania Cluster"] = working["Mania Score"] if "Mania Score" in working.columns else 0
+    working["Depression Cluster"] = working["Depression Score"] if "Depression Score" in working.columns else 0
+    working["Paranoia Cluster"] = working["Psychosis Score"] if "Psychosis Score" in working.columns else 0
+    working["Mixed Cluster"] = working["Instability Score"] if "Instability Score" in working.columns else 0
+
+    used_columns = {
+        "Date",
+        "DateLabel",
+        "Date (int)",
+        "Mania Score",
+        "Depression Score",
+        "Psychosis Score",
+        "Instability Score",
+    }
+
+    other_numeric = [
+        c for c in working.select_dtypes(include="number").columns
+        if c not in used_columns
+    ]
+
+    if other_numeric:
+        working["Other Cluster"] = working[other_numeric].mean(axis=1)
+    else:
+        working["Other Cluster"] = 0
+
+    cluster_cols = [
+        "Mania Cluster",
+        "Depression Cluster",
+        "Paranoia Cluster",
+        "Mixed Cluster",
+        "Other Cluster",
+    ]
+
+    return working[["DateLabel"] + cluster_cols]
 
 
 def latest_value(df: pd.DataFrame, col: str):
@@ -669,7 +744,7 @@ def latest_signal_summary(form_daily: pd.DataFrame) -> dict:
     all_count, all_total = count_flagged(signal_columns)
     mania_count, mania_total = count_flagged(MANIA_SIGNAL_COLUMNS)
     depression_count, depression_total = count_flagged(DEPRESSION_SIGNAL_COLUMNS)
-    psychosis_count, psychosis_total = count_flagged(PSYCHOSIS_SIGNAL_COLUMNS)
+    psychosis_count, psychosis_total = count_flagged(PARANOIA_SIGNAL_COLUMNS)
 
     def pct(count, total):
         if total == 0:
@@ -756,10 +831,12 @@ quick_df = convert_quick_data(load_sheet(QUICK_TAB))
 form_daily = make_daily_form_data(form_df)
 model_daily = make_daily_model_data(model_df)
 quick_summary = make_quick_summary_data(quick_df)
+model_cluster_data = make_model_cluster_data(model_daily)
 
 render_settings_panel()
 warning_scores = build_warning_scores(form_daily, st.session_state["warning_settings"])
 signal_summary = latest_signal_summary(form_daily)
+signal_cluster_totals = make_signal_cluster_totals(form_daily)
 
 st.title("Wellbeing Dashboard")
 
@@ -853,7 +930,7 @@ with tab2:
         f"{signal_summary['depression_count']}/{signal_summary['depression_total']}",
     )
     s4.metric(
-        "Psychosis-associated",
+        "Paranoia-associated",
         f"{signal_summary['psychosis_pct']:.0f}%",
         f"{signal_summary['psychosis_count']}/{signal_summary['psychosis_total']}",
     )
@@ -865,6 +942,10 @@ with tab2:
             st.markdown("### Total signals per day")
             total_signals_df = form_daily[["DateLabel", "Total Signals"]].set_index("DateLabel")
             st.bar_chart(total_signals_df)
+
+        if not signal_cluster_totals.empty:
+            st.markdown("### Signal totals by association")
+            st.bar_chart(signal_cluster_totals)
 
         totals = form_daily[signal_columns].sum().sort_values(ascending=False)
         totals = totals[totals > 0]
@@ -957,6 +1038,11 @@ with tab4:
         if selected_model_cols:
             model_chart_df = model_daily[["DateLabel"] + selected_model_cols].set_index("DateLabel")
             st.line_chart(model_chart_df)
+
+        if not model_cluster_data.empty:
+            st.markdown("### Model clusters")
+            cluster_chart_df = model_cluster_data.set_index("DateLabel")
+            st.line_chart(cluster_chart_df)
 
         st.markdown("### Daily model data")
         st.dataframe(model_daily, use_container_width=True)
