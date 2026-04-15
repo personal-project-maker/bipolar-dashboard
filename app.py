@@ -854,8 +854,8 @@ with tab3:
             st.write("No strong mixed-state warnings today.")
 
     st.info(
-        "These warnings are based on your self-tracked patterns and recent scores. "
-        "They are meant as an early warning prompt, not as a diagnosis or a medical decision tool."
+        "These warnings are based on your self-tracked patterns and are therefore almost entirely subjective. "
+        "They should be taken seriously, but do not allow them to override your judgement or that of those close to you."
     )
 
 with tab4:
