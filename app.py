@@ -193,6 +193,17 @@ DEFAULT_WARNING_SETTINGS = {
     "sleep_drop_alert": 1.5,
 }
 
+# =========================
+# Change Warning Thresholds
+# =========================
+CHANGE_WARNING_THRESHOLDS = {
+    COL_MOOD: 2.0,
+    COL_SLEEP_HOURS: 1.5,
+    COL_ENERGY: 2.0,
+    COL_MENTAL_SPEED: 2.0,
+    COL_IMPULSIVITY: 2.0,
+    COL_MOTIVATION: 2.0,
+}
 
 # =========================
 # Google Sheets Access
@@ -555,16 +566,106 @@ def add_model_features(form_daily: pd.DataFrame, quick_daily: pd.DataFrame) -> p
     model = form_daily.copy()
 
     # ---------- change features ----------
-    for col in [
+    tracked_change_columns = [
         COL_MOOD,
         COL_SLEEP_HOURS,
         COL_ENERGY,
         COL_MENTAL_SPEED,
         COL_IMPULSIVITY,
         COL_MOTIVATION,
-    ]:
+    ]
+
+    for col in tracked_change_columns:
         if col in model.columns:
-            model[f"{col} Change vs 3d Avg"] = rolling_delta_from_prev_avg(model[col], 3)
+            prev_avg = model[col].shift(1).rolling(window=3, min_periods=3).mean()
+            model[f"{col} 3d Avg"] = prev_avg
+            model[f"{col} Change vs 3d Avg"] = model[col] - prev_avg
+
+    # ---------- change warning flags ----------
+    def make_flag(series, direction, threshold):
+        if direction == "increase":
+            return (series >= threshold).fillna(False).astype(int)
+        if direction == "decrease":
+            return (series <= -threshold).fillna(False).astype(int)
+        return pd.Series(0, index=series.index)
+
+    if f"{COL_MOOD} Change vs 3d Avg" in model.columns:
+        model["Mood Drop Flag"] = make_flag(
+            model[f"{COL_MOOD} Change vs 3d Avg"], "decrease", CHANGE_WARNING_THRESHOLDS[COL_MOOD]
+        )
+        model["Mood Rise Flag"] = make_flag(
+            model[f"{COL_MOOD} Change vs 3d Avg"], "increase", CHANGE_WARNING_THRESHOLDS[COL_MOOD]
+        )
+
+    if f"{COL_SLEEP_HOURS} Change vs 3d Avg" in model.columns:
+        model["Sleep Drop Flag"] = make_flag(
+            model[f"{COL_SLEEP_HOURS} Change vs 3d Avg"], "decrease", CHANGE_WARNING_THRESHOLDS[COL_SLEEP_HOURS]
+        )
+        model["Sleep Increase Flag"] = make_flag(
+            model[f"{COL_SLEEP_HOURS} Change vs 3d Avg"], "increase", CHANGE_WARNING_THRESHOLDS[COL_SLEEP_HOURS]
+        )
+
+    if f"{COL_ENERGY} Change vs 3d Avg" in model.columns:
+        model["Energy Spike Flag"] = make_flag(
+            model[f"{COL_ENERGY} Change vs 3d Avg"], "increase", CHANGE_WARNING_THRESHOLDS[COL_ENERGY]
+        )
+        model["Energy Drop Flag"] = make_flag(
+            model[f"{COL_ENERGY} Change vs 3d Avg"], "decrease", CHANGE_WARNING_THRESHOLDS[COL_ENERGY]
+        )
+
+    if f"{COL_MENTAL_SPEED} Change vs 3d Avg" in model.columns:
+        model["Mental Speed Spike Flag"] = make_flag(
+            model[f"{COL_MENTAL_SPEED} Change vs 3d Avg"], "increase", CHANGE_WARNING_THRESHOLDS[COL_MENTAL_SPEED]
+        )
+        model["Mental Speed Drop Flag"] = make_flag(
+            model[f"{COL_MENTAL_SPEED} Change vs 3d Avg"], "decrease", CHANGE_WARNING_THRESHOLDS[COL_MENTAL_SPEED]
+        )
+
+    if f"{COL_IMPULSIVITY} Change vs 3d Avg" in model.columns:
+        model["Impulsivity Spike Flag"] = make_flag(
+            model[f"{COL_IMPULSIVITY} Change vs 3d Avg"], "increase", CHANGE_WARNING_THRESHOLDS[COL_IMPULSIVITY]
+        )
+        model["Impulsivity Drop Flag"] = make_flag(
+            model[f"{COL_IMPULSIVITY} Change vs 3d Avg"], "decrease", CHANGE_WARNING_THRESHOLDS[COL_IMPULSIVITY]
+        )
+
+    if f"{COL_MOTIVATION} Change vs 3d Avg" in model.columns:
+        model["Motivation Drop Flag"] = make_flag(
+            model[f"{COL_MOTIVATION} Change vs 3d Avg"], "decrease", CHANGE_WARNING_THRESHOLDS[COL_MOTIVATION]
+        )
+        model["Motivation Rise Flag"] = make_flag(
+            model[f"{COL_MOTIVATION} Change vs 3d Avg"], "increase", CHANGE_WARNING_THRESHOLDS[COL_MOTIVATION]
+        )
+
+    change_flag_columns = [
+        c for c in [
+            "Mood Drop Flag",
+            "Mood Rise Flag",
+            "Sleep Drop Flag",
+            "Sleep Increase Flag",
+            "Energy Spike Flag",
+            "Energy Drop Flag",
+            "Mental Speed Spike Flag",
+            "Mental Speed Drop Flag",
+            "Impulsivity Spike Flag",
+            "Impulsivity Drop Flag",
+            "Motivation Drop Flag",
+            "Motivation Rise Flag",
+        ]
+        if c in model.columns
+    ]
+
+    if change_flag_columns:
+        model["Change Warning Count"] = model[change_flag_columns].sum(axis=1)
+
+        def list_active_flags(row):
+            active = [col for col in change_flag_columns if row[col] == 1]
+            return ", ".join(active) if active else ""
+
+        model["Change Warning Flags"] = model.apply(list_active_flags, axis=1)
+    else:
+        model["Change Warning Count"] = 0
+        model["Change Warning Flags"] = ""
 
     # ---------- quick integration ----------
     if not quick_daily.empty and "Date" in quick_daily.columns:
@@ -589,7 +690,7 @@ def add_model_features(form_daily: pd.DataFrame, quick_daily: pd.DataFrame) -> p
         model["Quick Psychosis Score"] = pd.NA
         model["Quick Entries"] = pd.NA
 
-    # ---------- base score components ----------
+    # ---------- helpers ----------
     def val(row, col, default=0):
         v = row[col] if col in row.index else default
         return 0 if pd.isna(v) else v
@@ -620,26 +721,10 @@ def add_model_features(form_daily: pd.DataFrame, quick_daily: pd.DataFrame) -> p
         impulsivity_delta = val(row, f"{COL_IMPULSIVITY} Change vs 3d Avg")
         motivation_delta = val(row, f"{COL_MOTIVATION} Change vs 3d Avg")
 
-        up_flags = sum(
-            bool(val(row, c))
-            for c in MANIA_SIGNAL_COLUMNS
-            if c in model.columns
-        )
-        down_flags = sum(
-            bool(val(row, c))
-            for c in DEPRESSION_SIGNAL_COLUMNS
-            if c in model.columns
-        )
-        psychosis_flags = sum(
-            bool(val(row, c))
-            for c in PSYCHOSIS_SIGNAL_COLUMNS
-            if c in model.columns
-        )
-        mixed_flags = sum(
-            bool(val(row, c))
-            for c in MIXED_SIGNAL_COLUMNS
-            if c in model.columns
-        )
+        up_flags = sum(bool(val(row, c)) for c in MANIA_SIGNAL_COLUMNS if c in model.columns)
+        down_flags = sum(bool(val(row, c)) for c in DEPRESSION_SIGNAL_COLUMNS if c in model.columns)
+        psychosis_flags = sum(bool(val(row, c)) for c in PSYCHOSIS_SIGNAL_COLUMNS if c in model.columns)
+        mixed_flags = sum(bool(val(row, c)) for c in MIXED_SIGNAL_COLUMNS if c in model.columns)
 
         quick_mania = val(row, "Quick Mania Score")
         quick_depression = val(row, "Quick Depression Score")
@@ -788,10 +873,9 @@ def add_model_features(form_daily: pd.DataFrame, quick_daily: pd.DataFrame) -> p
         return "Low"
 
     model["Model Confidence"] = model.apply(confidence_from_row, axis=1)
-
     model["DateLabel"] = pd.to_datetime(model["Date"]).dt.strftime("%Y-%m-%d")
-    return model
 
+    return model
 
 # =========================
 # UI Rendering Helpers
@@ -1393,6 +1477,50 @@ with tab3:
         else:
             st.write("No strong mixed-state warnings today.")
 
+    st.markdown("### Change-based warning flags")
+
+    if not model_daily.empty and "Change Warning Count" in model_daily.columns:
+        latest_model_row = model_daily.iloc[-1]
+
+        latest_flag_count = int(latest_model_row["Change Warning Count"]) if pd.notna(latest_model_row["Change Warning Count"]) else 0
+        latest_flag_text = latest_model_row["Change Warning Flags"] if pd.notna(latest_model_row["Change Warning Flags"]) else ""
+
+        f1, f2 = st.columns(2)
+        f1.metric("Today's change flags", latest_flag_count)
+        f2.metric(
+            "Model confidence",
+            latest_model_row["Model Confidence"] if "Model Confidence" in latest_model_row.index else "N/A"
+        )
+
+        if latest_flag_text:
+            st.write(latest_flag_text)
+        else:
+            st.write("No significant change-based flags today.")
+
+        flagged_days = model_daily[model_daily["Change Warning Count"] > 0].copy()
+
+        if not flagged_days.empty:
+            st.markdown("### Days with change-based flags")
+            st.dataframe(
+                flagged_days[
+                    [
+                        c for c in [
+                            "DateLabel",
+                            "Change Warning Count",
+                            "Change Warning Flags",
+                            "Mania Score",
+                            "Depression Score",
+                            "Psychosis Score",
+                            "Instability Score",
+                            "Convergence Score",
+                            "Model Confidence",
+                        ]
+                        if c in flagged_days.columns
+                    ]
+                ],
+                use_container_width=True,
+            )
+    
     st.info(
         "These warnings are based on your self-tracked patterns and are therefore almost entirely subjective. "
         "They should be taken seriously, but do not allow them to override your judgement or that of those close to you."
