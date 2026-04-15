@@ -1,8 +1,18 @@
+# =========================================================
+# WELLBEING DASHBOARD
+# =========================================================
+
+# =========================
+# Imports
+# =========================
 import streamlit as st
 import pandas as pd
 import gspread
 
 
+# =========================
+# Authentication
+# =========================
 def check_password():
     def password_entered():
         if st.session_state["password"] == st.secrets["auth"]["password"]:
@@ -11,10 +21,20 @@ def check_password():
             st.session_state["authenticated"] = False
 
     if "authenticated" not in st.session_state:
-        st.text_input("Enter password", type="password", on_change=password_entered, key="password")
+        st.text_input(
+            "Enter password",
+            type="password",
+            on_change=password_entered,
+            key="password",
+        )
         return False
     elif not st.session_state["authenticated"]:
-        st.text_input("Enter password", type="password", on_change=password_entered, key="password")
+        st.text_input(
+            "Enter password",
+            type="password",
+            on_change=password_entered,
+            key="password",
+        )
         st.error("Wrong password")
         return False
     else:
@@ -24,14 +44,25 @@ def check_password():
 if not check_password():
     st.stop()
 
+
+# =========================
+# Page Configuration
+# =========================
 st.set_page_config(page_title="Wellbeing Dashboard", layout="wide")
 
+
+# =========================
+# Sheet Configuration
+# =========================
 SHEET_NAME = "Bipolar Dashboard"
 FORM_TAB = "Form Responses"
 MODEL_TAB = "Model"
 QUICK_TAB = "Quick Form Responses"
 
-# Warning sensitivity settings
+
+# =========================
+# Warning Sensitivity Settings
+# =========================
 DEFAULT_WARNING_SETTINGS = {
     "high_alert": 8,
     "low_alert": 3,
@@ -41,7 +72,10 @@ DEFAULT_WARNING_SETTINGS = {
     "sleep_drop_alert": 1.5,
 }
 
-# Signal groupings
+
+# =========================
+# Signal Groupings
+# =========================
 MANIA_SIGNAL_COLUMNS = [
     "Signals and indicators [Needed less sleep than usual without feeling tired]",
     "Signals and indicators [Started more activities than usual]",
@@ -70,7 +104,10 @@ MIXED_SIGNAL_COLUMNS = [
     'Signals and indicators [Felt "not like myself"]',
 ]
 
-# Quick response symptom groupings
+
+# =========================
+# Quick Response Groupings
+# =========================
 QUICK_DEPRESSION_COLUMNS = [
     "Symptoms: [Very low or depressed mood]",
     "Symptoms: [Somewhat low or depressed mood]",
@@ -94,6 +131,9 @@ QUICK_PSYCHOSIS_COLUMNS = [
 ]
 
 
+# =========================
+# Google Sheets Access
+# =========================
 @st.cache_resource
 def get_gspread_client():
     return gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
@@ -115,6 +155,7 @@ def load_sheet(tab_name: str) -> pd.DataFrame:
 
     seen = {}
     unique_headers = []
+
     for i, header in enumerate(headers):
         base = header if header else f"Unnamed_{i+1}"
         if base in seen:
@@ -135,6 +176,9 @@ def load_sheet(tab_name: str) -> pd.DataFrame:
     return df
 
 
+# =========================
+# Data Conversion Helpers
+# =========================
 def convert_form_data(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -196,7 +240,9 @@ def convert_quick_data(df: pd.DataFrame) -> pd.DataFrame:
         df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
         df["Date"] = df["Timestamp"].dt.date
 
-    quick_columns = QUICK_DEPRESSION_COLUMNS + QUICK_MANIA_COLUMNS + QUICK_PSYCHOSIS_COLUMNS
+    quick_columns = (
+        QUICK_DEPRESSION_COLUMNS + QUICK_MANIA_COLUMNS + QUICK_PSYCHOSIS_COLUMNS
+    )
 
     def score_response(val):
         text = str(val).strip().lower()
@@ -215,12 +261,16 @@ def convert_quick_data(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# =========================
+# Daily Summary Builders
+# =========================
 def make_daily_form_data(df: pd.DataFrame) -> pd.DataFrame:
     if "Date" not in df.columns:
         return pd.DataFrame()
 
     score_columns = [
-        c for c in [
+        c
+        for c in [
             "Mood Score",
             "Sleep (hours)",
             "Sleep quality",
@@ -231,7 +281,8 @@ def make_daily_form_data(df: pd.DataFrame) -> pd.DataFrame:
             "Unusual perceptions",
             "Suspiciousness",
             "Certainty and  belief in unusual ideas or things others don't believe",
-        ] if c in df.columns
+        ]
+        if c in df.columns
     ]
 
     signal_columns = [c for c in df.columns if c.startswith("Signals and indicators [")]
@@ -250,7 +301,6 @@ def make_daily_form_data(df: pd.DataFrame) -> pd.DataFrame:
         daily["Total Signals"] = daily[signal_columns].sum(axis=1)
 
     daily["DateLabel"] = pd.to_datetime(daily["Date"]).dt.strftime("%Y-%m-%d")
-
     return daily
 
 
@@ -265,7 +315,6 @@ def make_daily_model_data(df: pd.DataFrame) -> pd.DataFrame:
 
     daily = df.groupby("Date", as_index=False)[numeric_cols].mean()
     daily["DateLabel"] = pd.to_datetime(daily["Date"]).dt.strftime("%Y-%m-%d")
-
     return daily
 
 
@@ -279,36 +328,46 @@ def make_quick_summary_data(df: pd.DataFrame) -> pd.DataFrame:
 
     working = df.copy()
 
-    working["Depression Score"] = working[depression_cols].sum(axis=1) if depression_cols else 0
+    working["Depression Score"] = (
+        working[depression_cols].sum(axis=1) if depression_cols else 0
+    )
     working["Mania Score"] = working[mania_cols].sum(axis=1) if mania_cols else 0
-    working["Psychosis Score"] = working[psychosis_cols].sum(axis=1) if psychosis_cols else 0
+    working["Psychosis Score"] = (
+        working[psychosis_cols].sum(axis=1) if psychosis_cols else 0
+    )
     working["Overall Score"] = (
-        working["Depression Score"] + working["Mania Score"] + working["Psychosis Score"]
+        working["Depression Score"]
+        + working["Mania Score"]
+        + working["Psychosis Score"]
     )
 
     if "Timestamp" in working.columns:
         working = working.sort_values("Timestamp")
         working["DateLabel"] = working["Timestamp"].dt.strftime("%Y-%m-%d %H:%M")
-        return working[[
-            "Timestamp",
-            "DateLabel",
-            "Overall Score",
-            "Mania Score",
-            "Depression Score",
-            "Psychosis Score",
-        ]]
+        return working[
+            [
+                "Timestamp",
+                "DateLabel",
+                "Overall Score",
+                "Mania Score",
+                "Depression Score",
+                "Psychosis Score",
+            ]
+        ]
 
     if "Date" in working.columns:
         working = working.sort_values("Date")
         working["DateLabel"] = pd.to_datetime(working["Date"]).dt.strftime("%Y-%m-%d")
-        return working[[
-            "Date",
-            "DateLabel",
-            "Overall Score",
-            "Mania Score",
-            "Depression Score",
-            "Psychosis Score",
-        ]]
+        return working[
+            [
+                "Date",
+                "DateLabel",
+                "Overall Score",
+                "Mania Score",
+                "Depression Score",
+                "Psychosis Score",
+            ]
+        ]
 
     return pd.DataFrame()
 
@@ -325,16 +384,23 @@ def make_signal_cluster_totals(form_daily: pd.DataFrame) -> pd.Series:
             return 0
         return form_daily[available].sum().sum()
 
-    used = set(MANIA_SIGNAL_COLUMNS + DEPRESSION_SIGNAL_COLUMNS + PARANOIA_SIGNAL_COLUMNS + MIXED_SIGNAL_COLUMNS)
+    used = set(
+        MANIA_SIGNAL_COLUMNS
+        + DEPRESSION_SIGNAL_COLUMNS
+        + PARANOIA_SIGNAL_COLUMNS
+        + MIXED_SIGNAL_COLUMNS
+    )
     other_columns = [c for c in signal_columns if c not in used]
 
-    cluster_totals = pd.Series({
-        "Mania": safe_sum(MANIA_SIGNAL_COLUMNS),
-        "Depression": safe_sum(DEPRESSION_SIGNAL_COLUMNS),
-        "Paranoia": safe_sum(PARANOIA_SIGNAL_COLUMNS),
-        "Mixed": safe_sum(MIXED_SIGNAL_COLUMNS),
-        "Other": safe_sum(other_columns),
-    })
+    cluster_totals = pd.Series(
+        {
+            "Mania": safe_sum(MANIA_SIGNAL_COLUMNS),
+            "Depression": safe_sum(DEPRESSION_SIGNAL_COLUMNS),
+            "Paranoia": safe_sum(PARANOIA_SIGNAL_COLUMNS),
+            "Mixed": safe_sum(MIXED_SIGNAL_COLUMNS),
+            "Other": safe_sum(other_columns),
+        }
+    )
 
     return cluster_totals[cluster_totals > 0]
 
@@ -345,10 +411,18 @@ def make_model_cluster_data(model_daily: pd.DataFrame) -> pd.DataFrame:
 
     working = model_daily.copy()
 
-    working["Mania Cluster"] = working["Mania Score"] if "Mania Score" in working.columns else 0
-    working["Depression Cluster"] = working["Depression Score"] if "Depression Score" in working.columns else 0
-    working["Paranoia Cluster"] = working["Psychosis Score"] if "Psychosis Score" in working.columns else 0
-    working["Mixed Cluster"] = working["Instability Score"] if "Instability Score" in working.columns else 0
+    working["Mania Cluster"] = (
+        working["Mania Score"] if "Mania Score" in working.columns else 0
+    )
+    working["Depression Cluster"] = (
+        working["Depression Score"] if "Depression Score" in working.columns else 0
+    )
+    working["Paranoia Cluster"] = (
+        working["Psychosis Score"] if "Psychosis Score" in working.columns else 0
+    )
+    working["Mixed Cluster"] = (
+        working["Instability Score"] if "Instability Score" in working.columns else 0
+    )
 
     used_columns = {
         "Date",
@@ -361,7 +435,8 @@ def make_model_cluster_data(model_daily: pd.DataFrame) -> pd.DataFrame:
     }
 
     other_numeric = [
-        c for c in working.select_dtypes(include="number").columns
+        c
+        for c in working.select_dtypes(include="number").columns
         if c not in used_columns
     ]
 
@@ -381,6 +456,9 @@ def make_model_cluster_data(model_daily: pd.DataFrame) -> pd.DataFrame:
     return working[["DateLabel"] + cluster_cols]
 
 
+# =========================
+# Utility Helpers
+# =========================
 def latest_value(df: pd.DataFrame, col: str):
     if col not in df.columns or df.empty:
         return None
@@ -431,6 +509,9 @@ def risk_color(score: int) -> str:
     return "#2e7d32"
 
 
+# =========================
+# UI Rendering Helpers
+# =========================
 def render_banner(title: str, score: int):
     color = risk_color(score)
     label = risk_label(score)
@@ -450,10 +531,68 @@ def render_banner(title: str, score: int):
             {title}: {label} ({score}/100)
         </div>
         """,
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
 
+def render_settings_panel():
+    st.markdown("## Warning Settings")
+
+    with st.expander("Edit warning thresholds"):
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            st.session_state["warning_settings"]["high_alert"] = st.number_input(
+                "High score alert threshold",
+                min_value=1,
+                max_value=10,
+                value=int(st.session_state["warning_settings"]["high_alert"]),
+                step=1,
+            )
+            st.session_state["warning_settings"]["low_alert"] = st.number_input(
+                "Low score alert threshold",
+                min_value=1,
+                max_value=10,
+                value=int(st.session_state["warning_settings"]["low_alert"]),
+                step=1,
+            )
+
+        with c2:
+            st.session_state["warning_settings"]["change_alert"] = st.number_input(
+                "Score change alert threshold",
+                min_value=0.5,
+                max_value=5.0,
+                value=float(st.session_state["warning_settings"]["change_alert"]),
+                step=0.5,
+            )
+            st.session_state["warning_settings"]["mood_swing_alert"] = st.number_input(
+                "Mood swing alert threshold",
+                min_value=0.5,
+                max_value=5.0,
+                value=float(st.session_state["warning_settings"]["mood_swing_alert"]),
+                step=0.5,
+            )
+
+        with c3:
+            st.session_state["warning_settings"]["sleep_low_hours"] = st.number_input(
+                "Low sleep threshold (hours)",
+                min_value=0.0,
+                max_value=12.0,
+                value=float(st.session_state["warning_settings"]["sleep_low_hours"]),
+                step=0.5,
+            )
+            st.session_state["warning_settings"]["sleep_drop_alert"] = st.number_input(
+                "Sleep drop alert threshold",
+                min_value=0.5,
+                max_value=5.0,
+                value=float(st.session_state["warning_settings"]["sleep_drop_alert"]),
+                step=0.5,
+            )
+
+
+# =========================
+# Warning Score Logic
+# =========================
 def build_warning_scores(form_daily: pd.DataFrame, settings: dict) -> dict:
     if form_daily.empty:
         return {
@@ -492,26 +631,74 @@ def build_warning_scores(form_daily: pd.DataFrame, settings: dict) -> dict:
     prev_motivation = previous_avg(form_daily, "Motivation", 3)
     prev_sleep_quality = previous_avg(form_daily, "Sleep quality", 3)
 
-    less_sleep_flag = bool_latest(form_daily, "Signals and indicators [Needed less sleep than usual without feeling tired]")
-    more_activity_flag = bool_latest(form_daily, "Signals and indicators [Started more activities than usual]")
-    up_now_flag = bool_latest(form_daily, "Signals and indicators [Feel like I'm experiencing an up]")
-    up_coming_flag = bool_latest(form_daily, "Signals and indicators [Feel like I'm going to experience an up]")
+    less_sleep_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Needed less sleep than usual without feeling tired]",
+    )
+    more_activity_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Started more activities than usual]",
+    )
+    up_now_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Feel like I'm experiencing an up]",
+    )
+    up_coming_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Feel like I'm going to experience an up]",
+    )
 
-    down_now_flag = bool_latest(form_daily, "Signals and indicators [Feel like I'm experiencing a down]")
-    down_coming_flag = bool_latest(form_daily, "Signals and indicators [Feel like I'm going to experience a down]")
+    down_now_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Feel like I'm experiencing a down]",
+    )
+    down_coming_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Feel like I'm going to experience a down]",
+    )
 
-    mixed_now_flag = bool_latest(form_daily, "Signals and indicators [Feel like I'm experiencing a mixed]")
-    mixed_coming_flag = bool_latest(form_daily, "Signals and indicators [Feel like I'm going to experience a mixed]")
+    mixed_now_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Feel like I'm experiencing a mixed]",
+    )
+    mixed_coming_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Feel like I'm going to experience a mixed]",
+    )
 
-    withdraw_flag = bool_latest(form_daily, "Signals and indicators [Withdrew socially or emotionally from others]")
-    avoid_flag = bool_latest(form_daily, "Signals and indicators [Avoided normal responsiblities]")
-    mood_shift_flag = bool_latest(form_daily, "Signals and indicators [Noticed a sudden mood shift]")
-    not_myself_flag = bool_latest(form_daily, 'Signals and indicators [Felt "not like myself"]')
+    withdraw_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Withdrew socially or emotionally from others]",
+    )
+    avoid_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Avoided normal responsiblities]",
+    )
+    mood_shift_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Noticed a sudden mood shift]",
+    )
+    not_myself_flag = bool_latest(
+        form_daily,
+        'Signals and indicators [Felt "not like myself"]',
+    )
 
-    heard_saw_flag = bool_latest(form_daily, "Signals and indicators [Heard or saw something others didn't]")
-    watched_flag = bool_latest(form_daily, "Signals and indicators [Felt watched, followed, targeted]")
-    special_meaning_flag = bool_latest(form_daily, "Signals and indicators [Felt something had special meaning for me]")
-    trust_thoughts_flag = bool_latest(form_daily, "Signals and indicators [Trouble trusting perceptions and thoughts]")
+    heard_saw_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Heard or saw something others didn't]",
+    )
+    watched_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Felt watched, followed, targeted]",
+    )
+    special_meaning_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Felt something had special meaning for me]",
+    )
+    trust_thoughts_flag = bool_latest(
+        form_daily,
+        "Signals and indicators [Trouble trusting perceptions and thoughts]",
+    )
 
     psychosis_flags = [
         heard_saw_flag,
@@ -767,63 +954,16 @@ def latest_signal_summary(form_daily: pd.DataFrame) -> dict:
     }
 
 
-def render_settings_panel():
-    st.markdown("## Warning Settings")
-    with st.expander("Edit warning thresholds"):
-        c1, c2, c3 = st.columns(3)
-
-        with c1:
-            st.session_state["warning_settings"]["high_alert"] = st.number_input(
-                "High score alert threshold",
-                min_value=1,
-                max_value=10,
-                value=int(st.session_state["warning_settings"]["high_alert"]),
-                step=1,
-            )
-            st.session_state["warning_settings"]["low_alert"] = st.number_input(
-                "Low score alert threshold",
-                min_value=1,
-                max_value=10,
-                value=int(st.session_state["warning_settings"]["low_alert"]),
-                step=1,
-            )
-
-        with c2:
-            st.session_state["warning_settings"]["change_alert"] = st.number_input(
-                "Score change alert threshold",
-                min_value=0.5,
-                max_value=5.0,
-                value=float(st.session_state["warning_settings"]["change_alert"]),
-                step=0.5,
-            )
-            st.session_state["warning_settings"]["mood_swing_alert"] = st.number_input(
-                "Mood swing alert threshold",
-                min_value=0.5,
-                max_value=5.0,
-                value=float(st.session_state["warning_settings"]["mood_swing_alert"]),
-                step=0.5,
-            )
-
-        with c3:
-            st.session_state["warning_settings"]["sleep_low_hours"] = st.number_input(
-                "Low sleep threshold (hours)",
-                min_value=0.0,
-                max_value=12.0,
-                value=float(st.session_state["warning_settings"]["sleep_low_hours"]),
-                step=0.5,
-            )
-            st.session_state["warning_settings"]["sleep_drop_alert"] = st.number_input(
-                "Sleep drop alert threshold",
-                min_value=0.5,
-                max_value=5.0,
-                value=float(st.session_state["warning_settings"]["sleep_drop_alert"]),
-                step=0.5,
-            )
-
-
+# =========================
+# Session State Initialization
+# =========================
 if "warning_settings" not in st.session_state:
     st.session_state["warning_settings"] = DEFAULT_WARNING_SETTINGS.copy()
 
+
+# =========================
+# Load and Prepare Data
+# =========================
 form_df = convert_form_data(load_sheet(FORM_TAB))
 model_df = convert_model_data(load_sheet(MODEL_TAB))
 quick_df = convert_quick_data(load_sheet(QUICK_TAB))
@@ -834,10 +974,15 @@ quick_summary = make_quick_summary_data(quick_df)
 model_cluster_data = make_model_cluster_data(model_daily)
 
 render_settings_panel()
+
 warning_scores = build_warning_scores(form_daily, st.session_state["warning_settings"])
 signal_summary = latest_signal_summary(form_daily)
 signal_cluster_totals = make_signal_cluster_totals(form_daily)
 
+
+# =========================
+# Dashboard Header
+# =========================
 st.title("Wellbeing Dashboard")
 
 top1, top2, top3, top4 = st.columns(4)
@@ -846,13 +991,19 @@ top1.metric("Form entries", len(form_df))
 top2.metric("Days tracked", len(form_daily) if not form_daily.empty else 0)
 top3.metric(
     "Average Mood",
-    f"{form_df['Mood Score'].mean():.1f}" if "Mood Score" in form_df.columns else "N/A"
+    f"{form_df['Mood Score'].mean():.1f}" if "Mood Score" in form_df.columns else "N/A",
 )
 top4.metric(
     "Average Sleep",
-    f"{form_df['Sleep (hours)'].mean():.1f} hrs" if "Sleep (hours)" in form_df.columns else "N/A"
+    f"{form_df['Sleep (hours)'].mean():.1f} hrs"
+    if "Sleep (hours)" in form_df.columns
+    else "N/A",
 )
 
+
+# =========================
+# Current Warning Status
+# =========================
 st.markdown("## Current Warning Status")
 b1, b2, b3 = st.columns(3)
 
@@ -865,22 +1016,33 @@ with b2:
 with b3:
     render_banner("Mixed / Instability Risk", warning_scores["mixed_score"])
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "Daily Trends",
-    "Signals by Day",
-    "Warnings",
-    "Model",
-    "Quick Responses",
-    "Form Data",
-    "Model Data",
-])
 
+# =========================
+# Dashboard Tabs
+# =========================
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
+    [
+        "Daily Trends",
+        "Signals by Day",
+        "Warnings",
+        "Model",
+        "Quick Responses",
+        "Form Data",
+        "Model Data",
+    ]
+)
+
+
+# =========================
+# Tab 1: Daily Trends
+# =========================
 with tab1:
     st.subheader("Daily trends from Form Responses")
 
     if not form_daily.empty:
         score_columns = [
-            c for c in [
+            c
+            for c in [
                 "Mood Score",
                 "Sleep (hours)",
                 "Sleep quality",
@@ -891,13 +1053,18 @@ with tab1:
                 "Unusual perceptions",
                 "Suspiciousness",
                 "Certainty and  belief in unusual ideas or things others don't believe",
-            ] if c in form_daily.columns
+            ]
+            if c in form_daily.columns
         ]
 
         selected = st.multiselect(
             "Choose scores",
             score_columns,
-            default=[c for c in ["Mood Score", "Sleep (hours)", "Energy", "Motivation"] if c in score_columns],
+            default=[
+                c
+                for c in ["Mood Score", "Sleep (hours)", "Energy", "Motivation"]
+                if c in score_columns
+            ],
         )
 
         if selected:
@@ -908,12 +1075,16 @@ with tab1:
     else:
         st.info("No daily form data available.")
 
+
+# =========================
+# Tab 2: Signals by Day
+# =========================
 with tab2:
     st.subheader("Signals by day")
-
     st.markdown("### Latest signal summary")
 
     s1, s2, s3, s4 = st.columns(4)
+
     s1.metric(
         "All signals flagged",
         f"{signal_summary['all_pct']:.0f}%",
@@ -960,6 +1131,10 @@ with tab2:
     else:
         st.info("No signal data available.")
 
+
+# =========================
+# Tab 3: Warnings
+# =========================
 with tab3:
     st.subheader("Predictive warnings from current data")
 
@@ -968,21 +1143,22 @@ with tab3:
     c1.metric(
         "Up / Mania Risk",
         f"{warning_scores['up_score']}/100",
-        risk_label(warning_scores["up_score"])
+        risk_label(warning_scores["up_score"]),
     )
     c2.metric(
         "Down / Depression Risk",
         f"{warning_scores['down_score']}/100",
-        risk_label(warning_scores["down_score"])
+        risk_label(warning_scores["down_score"]),
     )
     c3.metric(
         "Mixed / Instability Risk",
         f"{warning_scores['mixed_score']}/100",
-        risk_label(warning_scores["mixed_score"])
+        risk_label(warning_scores["mixed_score"]),
     )
 
     st.markdown("### Traffic light summary")
     t1, t2, t3 = st.columns(3)
+
     with t1:
         render_banner("Up / Mania", warning_scores["up_score"])
     with t2:
@@ -991,7 +1167,6 @@ with tab3:
         render_banner("Mixed / Instability", warning_scores["mixed_score"])
 
     st.markdown("### Why these warnings are showing")
-
     left, middle, right = st.columns(3)
 
     with left:
@@ -1023,6 +1198,10 @@ with tab3:
         "They should be taken seriously, but do not allow them to override your judgement or that of those close to you."
     )
 
+
+# =========================
+# Tab 4: Model
+# =========================
 with tab4:
     st.subheader("Model tab")
 
@@ -1049,6 +1228,10 @@ with tab4:
     else:
         st.info("The Model tab loaded, but I couldn't find daily numeric columns to chart.")
 
+
+# =========================
+# Tab 5: Quick Responses
+# =========================
 with tab5:
     st.subheader("Quick form responses")
 
@@ -1079,10 +1262,18 @@ with tab5:
     else:
         st.info("No quick form response data available.")
 
+
+# =========================
+# Tab 6: Raw Form Data
+# =========================
 with tab6:
     st.subheader("Raw Form Responses")
     st.dataframe(form_df, use_container_width=True)
 
+
+# =========================
+# Tab 7: Raw Model Data
+# =========================
 with tab7:
     st.subheader("Raw Model Data")
     st.dataframe(model_df, use_container_width=True)
