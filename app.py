@@ -473,7 +473,6 @@ def render_filtered_chart(
         return
 
     filtered = filter_df_by_date(df, date_col, key_prefix)
-
     available_cols = [c for c in default_cols if c in filtered.columns]
 
     selected_cols = st.multiselect(
@@ -878,20 +877,16 @@ def build_daily_summary_cards(daily_df: pd.DataFrame, settings: dict):
                 cleaned.append(c.replace(prefix_to_remove, ""))
         return cleaned[:3]
 
-    depression_level = daily_level(float(latest["Depression Score"]))
     mania_level = daily_level(float(latest["Mania Score"]))
+    depression_level = daily_level(float(latest["Depression Score"]))
     psychosis_level = daily_level(float(latest["Psychosis Score"]))
 
-    depression_trend = daily_trend(last5["Depression Score"])
-    mania_trend = daily_trend(last5["Mania Score"])
-    psychosis_trend = daily_trend(last5["Psychosis Score"])
-
-    summary = {
+    return {
         "Depression": {
             "score": float(latest["Depression Score"]),
             "level": depression_level,
-            "trend": depression_trend,
-            "confidence": confidence_from_count(len(last5), depression_trend, depression_level),
+            "trend": daily_trend(last5["Depression Score"]),
+            "confidence": confidence_from_count(len(last5), daily_trend(last5["Depression Score"]), depression_level),
             "reasons": top_reasons(
                 latest,
                 [
@@ -906,8 +901,8 @@ def build_daily_summary_cards(daily_df: pd.DataFrame, settings: dict):
         "Mania": {
             "score": float(latest["Mania Score"]),
             "level": mania_level,
-            "trend": mania_trend,
-            "confidence": confidence_from_count(len(last5), mania_trend, mania_level),
+            "trend": daily_trend(last5["Mania Score"]),
+            "confidence": confidence_from_count(len(last5), daily_trend(last5["Mania Score"]), mania_level),
             "reasons": top_reasons(
                 latest,
                 [
@@ -923,8 +918,8 @@ def build_daily_summary_cards(daily_df: pd.DataFrame, settings: dict):
         "Psychosis": {
             "score": float(latest["Psychosis Score"]),
             "level": psychosis_level,
-            "trend": psychosis_trend,
-            "confidence": confidence_from_count(len(last5), psychosis_trend, psychosis_level),
+            "trend": daily_trend(last5["Psychosis Score"]),
+            "confidence": confidence_from_count(len(last5), daily_trend(last5["Psychosis Score"]), psychosis_level),
             "reasons": top_reasons(
                 latest,
                 [
@@ -938,23 +933,19 @@ def build_daily_summary_cards(daily_df: pd.DataFrame, settings: dict):
         },
     }
 
-    return summary
-
 
 # =========================
 # Warning Helpers
 # =========================
 def prettify_signal_name(name: str) -> str:
-    cleaned = name.replace("Signals and indicators [", "").replace("]", "")
-    return cleaned
+    return name.replace("Signals and indicators [", "").replace("]", "")
 
 
 def get_latest_form_warning_items(form_df: pd.DataFrame) -> tuple[list[str], list[str]]:
     if form_df.empty or "Timestamp" not in form_df.columns:
         return [], []
 
-    working = form_df.copy()
-    working = working.sort_values("Timestamp").reset_index(drop=True)
+    working = form_df.copy().sort_values("Timestamp").reset_index(drop=True)
     latest = working.iloc[-1]
 
     signal_columns = [c for c in working.columns if c.startswith("Signals and indicators [")]
@@ -996,8 +987,7 @@ def get_latest_snapshot_warning_items(snapshot_raw_df: pd.DataFrame) -> tuple[li
     if snapshot_raw_df.empty or "Timestamp" not in snapshot_raw_df.columns:
         return [], []
 
-    working = snapshot_raw_df.copy()
-    working = working.sort_values("Timestamp").reset_index(drop=True)
+    working = snapshot_raw_df.copy().sort_values("Timestamp").reset_index(drop=True)
     latest = working.iloc[-1]
 
     signals = []
@@ -1077,6 +1067,25 @@ except Exception as e:
 form_df = load_sheet(FORM_TAB)
 snapshot_df_raw = load_sheet(SNAPSHOT_TAB)
 
+form_data = prepare_form(form_df)
+snapshot_data = prepare_snapshot(snapshot_df_raw)
+snapshot_model_summary, snapshot_model_data = build_snapshot_model(
+    snapshot_df_raw,
+    st.session_state["snapshot_settings"],
+)
+daily_model_data = build_daily_model(form_df, st.session_state["daily_settings"])
+daily_model_summary = build_daily_summary_cards(
+    daily_model_data,
+    st.session_state["daily_settings"],
+)
+
+latest_form_signals, latest_form_findings = get_latest_form_warning_items(form_df)
+latest_snapshot_signals, latest_snapshot_findings = get_latest_snapshot_warning_items(snapshot_df_raw)
+daily_model_findings, snapshot_model_findings = get_model_concerning_findings(
+    daily_model_summary,
+    snapshot_model_summary,
+)
+
 
 # =========================
 # Tabs
@@ -1105,70 +1114,52 @@ with tab_dashboard:
 with tab_warnings:
     st.subheader("Warnings")
 
-    # Build from current settings
-    current_daily_model_data = build_daily_model(form_df, st.session_state["daily_settings"])
-    current_daily_model_summary = build_daily_summary_cards(
-        current_daily_model_data,
-        st.session_state["daily_settings"],
-    )
-    current_snapshot_model_summary, current_snapshot_model_data = build_snapshot_model(
-        snapshot_df_raw,
-        st.session_state["snapshot_settings"],
-    )
-
-    latest_form_signals, latest_form_findings = get_latest_form_warning_items(form_df)
-    latest_snapshot_signals, latest_snapshot_findings = get_latest_snapshot_warning_items(snapshot_df_raw)
-    daily_model_findings, snapshot_model_findings = get_model_concerning_findings(
-        current_daily_model_summary,
-        current_snapshot_model_summary,
-    )
-
     st.markdown("### Current State — Daily Model")
-    if current_daily_model_summary:
+    if daily_model_summary:
         c1, c2, c3 = st.columns(3)
         with c1:
-            render_daily_card("Depression", current_daily_model_summary["Depression"])
+            render_daily_card("Depression", daily_model_summary["Depression"])
         with c2:
-            render_daily_card("Mania", current_daily_model_summary["Mania"])
+            render_daily_card("Mania", daily_model_summary["Mania"])
         with c3:
-            render_daily_card("Psychosis", current_daily_model_summary["Psychosis"])
+            render_daily_card("Psychosis", daily_model_summary["Psychosis"])
     else:
         st.info("No Daily Model summary available.")
 
     st.markdown("### Current State — Snapshot Model")
-    if current_snapshot_model_summary:
+    if snapshot_model_summary:
         c1, c2, c3 = st.columns(3)
         with c1:
             render_status_card(
                 "Depression",
-                current_snapshot_model_summary["Depression"]["score"],
-                current_snapshot_model_summary["Depression"]["max_score"],
-                current_snapshot_model_summary["Depression"]["level"],
-                current_snapshot_model_summary["Depression"]["trend"],
-                current_snapshot_model_summary["Depression"]["confidence"],
+                snapshot_model_summary["Depression"]["score"],
+                snapshot_model_summary["Depression"]["max_score"],
+                snapshot_model_summary["Depression"]["level"],
+                snapshot_model_summary["Depression"]["trend"],
+                snapshot_model_summary["Depression"]["confidence"],
             )
         with c2:
             render_status_card(
                 "Mania",
-                current_snapshot_model_summary["Mania"]["score"],
-                current_snapshot_model_summary["Mania"]["max_score"],
-                current_snapshot_model_summary["Mania"]["level"],
-                current_snapshot_model_summary["Mania"]["trend"],
-                current_snapshot_model_summary["Mania"]["confidence"],
+                snapshot_model_summary["Mania"]["score"],
+                snapshot_model_summary["Mania"]["max_score"],
+                snapshot_model_summary["Mania"]["level"],
+                snapshot_model_summary["Mania"]["trend"],
+                snapshot_model_summary["Mania"]["confidence"],
             )
         with c3:
             render_status_card(
                 "Psychosis",
-                current_snapshot_model_summary["Psychosis"]["score"],
-                current_snapshot_model_summary["Psychosis"]["max_score"],
-                current_snapshot_model_summary["Psychosis"]["level"],
-                current_snapshot_model_summary["Psychosis"]["trend"],
-                current_snapshot_model_summary["Psychosis"]["confidence"],
+                snapshot_model_summary["Psychosis"]["score"],
+                snapshot_model_summary["Psychosis"]["max_score"],
+                snapshot_model_summary["Psychosis"]["level"],
+                snapshot_model_summary["Psychosis"]["trend"],
+                snapshot_model_summary["Psychosis"]["confidence"],
             )
-        if current_snapshot_model_summary["Mixed"]["active"]:
+        if snapshot_model_summary["Mixed"]["active"]:
             st.error(
-                f"Mixed state active — Trend: {current_snapshot_model_summary['Mixed']['trend']} | "
-                f"Confidence: {current_snapshot_model_summary['Mixed']['confidence']}"
+                f"Mixed state active — Trend: {snapshot_model_summary['Mixed']['trend']} | "
+                f"Confidence: {snapshot_model_summary['Mixed']['confidence']}"
             )
     else:
         st.info("No Snapshot Model summary available.")
@@ -1377,21 +1368,25 @@ with tab_daily_model:
     if daily_model_data.empty:
         st.info("No daily model data available.")
     else:
-       if daily_model_summary:
-        c1, c2, c3 = st.columns(3)
-    with c1:
-        render_daily_card("Depression", daily_model_summary["Depression"])
-    with c2:
-        render_daily_card("Mania", daily_model_summary["Mania"])
-    with c3:
-        render_daily_card("Psychosis", daily_model_summary["Psychosis"])
+        if daily_model_summary:
+            st.markdown("### Current Daily State")
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                render_daily_card("Depression", daily_model_summary["Depression"])
+
+            with c2:
+                render_daily_card("Mania", daily_model_summary["Mania"])
+
+            with c3:
+                render_daily_card("Psychosis", daily_model_summary["Psychosis"])
 
         render_filtered_chart(
             daily_model_data,
             date_col="Date",
             label_col="DateLabel",
             title="Daily state scores",
-            default_cols=["Mania Score", "Depression Score", "Psychosis Score", "Mixed Score"],
+            default_cols=["Depression Score", "Mania Score", "Psychosis Score", "Mixed Score"],
             key_prefix="daily_state_scores",
             chart_type="line",
         )
@@ -1462,8 +1457,8 @@ with tab_daily_model:
             label_col="DateLabel",
             title="Everything",
             default_cols=[
-                "Mania Score",
                 "Depression Score",
+                "Mania Score",
                 "Psychosis Score",
                 "Mixed Score",
                 "Mania - Energy",
@@ -1503,8 +1498,8 @@ with tab_daily_model:
             label_col="DateLabel",
             title="Signals by category",
             default_cols=[
-                "Mania Signals",
                 "Depression Signals",
+                "Mania Signals",
                 "Psychosis Signals",
             ],
             key_prefix="daily_signal_breakdown",
@@ -1515,13 +1510,13 @@ with tab_daily_model:
         default_daily_cols = [
             c for c in [
                 "Date",
-                "Mania Score",
                 "Depression Score",
+                "Mania Score",
                 "Psychosis Score",
                 "Mixed Score",
                 "Total Signals",
-                "Mania Signals",
                 "Depression Signals",
+                "Mania Signals",
                 "Psychosis Signals",
             ]
             if c in daily_model_data.columns
@@ -1630,8 +1625,9 @@ with tab_snapshot_model:
         else:
             st.success("Mixed state not currently active.")
 
+        snapshot_chart_df = snapshot_model_data.assign(FilterDate=snapshot_model_data["Timestamp"].dt.date)
         render_filtered_chart(
-            snapshot_model_data.assign(FilterDate=snapshot_model_data["Timestamp"].dt.date),
+            snapshot_chart_df,
             date_col="FilterDate",
             label_col="TimeLabel",
             title="Snapshot model scores",
