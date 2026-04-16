@@ -129,13 +129,6 @@ PSYCHOSIS_SIGNAL_COLUMNS = [
     SIG_TROUBLE_TRUSTING,
 ]
 
-# Per your instruction: mixed should combine mania + depression + psychosis
-MIXED_SIGNAL_COLUMNS = (
-    MANIA_SIGNAL_COLUMNS
-    + DEPRESSION_SIGNAL_COLUMNS
-    + PSYCHOSIS_SIGNAL_COLUMNS
-)
-
 
 # =========================
 # Google Sheets Access
@@ -249,7 +242,7 @@ def level_from_score(score: float, max_score: float) -> str:
     return "Low"
 
 
-def trend_from_series(series: pd.Series) -> str:
+def trend_from_series(series: pd.Series, threshold: float = 1.0) -> str:
     s = pd.to_numeric(series, errors="coerce").dropna()
     if len(s) < 2:
         return "Stable"
@@ -260,9 +253,9 @@ def trend_from_series(series: pd.Series) -> str:
 
     diff = s.iloc[-1] - baseline.mean()
 
-    if diff > 1:
+    if diff > threshold:
         return "Rising"
-    if diff < -1:
+    if diff < -threshold:
         return "Falling"
     return "Stable"
 
@@ -345,6 +338,47 @@ def render_status_card(title: str, score: float, max_score: float, level: str, t
     )
 
 
+def render_daily_card(title: str, data: dict):
+    color = status_color(data["level"])
+    conf_color = confidence_color(data["confidence"])
+
+    reasons_html = "<br>".join([f"• {r}" for r in data["reasons"]]) if data["reasons"] else "No strong drivers"
+
+    st.markdown(
+        f"""
+        <div style="
+            border: 1px solid #ddd;
+            border-left: 8px solid {color};
+            border-radius: 12px;
+            padding: 16px;
+            background-color: #fafafa;
+            margin-bottom: 12px;
+        ">
+            <div style="font-size: 22px; font-weight: 700; margin-bottom: 6px;">{title}</div>
+            <div style="font-size: 16px; margin-bottom: 6px;"><strong>Current state:</strong> {data['level']} ({data['score']:.0f}/100)</div>
+            <div style="font-size: 16px; margin-bottom: 6px;"><strong>Trend:</strong> {data['trend']}</div>
+            <div style="font-size: 16px; margin-bottom: 8px;">
+                <strong>Confidence:</strong>
+                <span style="
+                    background-color:{conf_color};
+                    color:white;
+                    padding:2px 8px;
+                    border-radius:999px;
+                    font-weight:600;
+                ">
+                    {data['confidence']}
+                </span>
+            </div>
+            <div style="font-size: 16px;">
+                <strong>Reasons:</strong><br>
+                {reasons_html}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # =========================
 # Form Data (DATE-based)
 # =========================
@@ -357,10 +391,8 @@ def prepare_form(df: pd.DataFrame) -> pd.DataFrame:
     if "Timestamp" not in df.columns:
         return df
 
-    # Form responses must use DATE only
     df["Date"] = pd.to_datetime(df["Timestamp"], errors="coerce").dt.date
 
-    # Convert signal columns to numeric 0/1
     signal_columns = [c for c in df.columns if c.startswith("Signals and indicators [")]
     for col in signal_columns:
         df[col] = df[col].apply(bool_from_response).astype(int)
@@ -380,8 +412,9 @@ def prepare_form(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index(drop=True)
     )
 
+    rolling_base_cols = [c for c in numeric_cols if c not in signal_columns]
     rolling = (
-        daily[[c for c in numeric_cols if c not in signal_columns]]
+        daily[rolling_base_cols]
         .rolling(window=3, min_periods=1)
         .mean()
         .add_suffix(" 3 Day Rolling Avg")
@@ -473,9 +506,9 @@ def build_snapshot_model(df: pd.DataFrame):
     last5 = working.tail(5).copy()
     latest = last5.iloc[-1]
 
-    dep_trend = trend_from_series(last5["Depression Score"])
-    mania_trend = trend_from_series(last5["Mania Score"])
-    psych_trend = trend_from_series(last5["Psychosis Score"])
+    dep_trend = trend_from_series(last5["Depression Score"], threshold=1.0)
+    mania_trend = trend_from_series(last5["Mania Score"], threshold=1.0)
+    psych_trend = trend_from_series(last5["Psychosis Score"], threshold=1.0)
 
     dep_conf = confidence_from_entries(last5, dep_trend, latest["Depression Level"])
     mania_conf = confidence_from_entries(last5, mania_trend, latest["Mania Level"])
@@ -542,16 +575,12 @@ def build_daily_model(form_df: pd.DataFrame) -> pd.DataFrame:
 
     working = form_df.copy()
     working = convert_numeric(working)
-
-    # DATE only for all daily graphs
     working["Date"] = pd.to_datetime(working["Timestamp"], errors="coerce").dt.date
 
-    # Signals to 0/1
     signal_columns = [c for c in working.columns if c.startswith("Signals and indicators [")]
     for col in signal_columns:
         working[col] = working[col].apply(bool_from_response).astype(int)
 
-    # Numeric scores
     score_columns = [
         COL_MOOD,
         COL_SLEEP_HOURS,
@@ -564,7 +593,6 @@ def build_daily_model(form_df: pd.DataFrame) -> pd.DataFrame:
         COL_SUSPICIOUS,
         COL_CERTAINTY,
     ]
-
     available_score_columns = [c for c in score_columns if c in working.columns]
 
     daily_scores = (
@@ -579,7 +607,6 @@ def build_daily_model(form_df: pd.DataFrame) -> pd.DataFrame:
 
     daily = daily_scores.merge(daily_signals, on="Date", how="outer").sort_values("Date").reset_index(drop=True)
 
-    # ---------- Mania contributions ----------
     daily["Mania - Energy"] = safe_series(daily, COL_ENERGY) * 4
     daily["Mania - Mental speed"] = safe_series(daily, COL_MENTAL_SPEED) * 4
     daily["Mania - Impulsivity"] = safe_series(daily, COL_IMPULSIVITY) * 4
@@ -599,7 +626,6 @@ def build_daily_model(form_df: pd.DataFrame) -> pd.DataFrame:
         + daily["Mania - Up signals"]
     )
 
-    # ---------- Depression contributions ----------
     daily["Depression - Low mood"] = (10 - safe_series(daily, COL_MOOD)).clip(lower=0) * 5
     daily["Depression - Low energy"] = (10 - safe_series(daily, COL_ENERGY)).clip(lower=0) * 3
     daily["Depression - Low motivation"] = (10 - safe_series(daily, COL_MOTIVATION)).clip(lower=0) * 4
@@ -617,7 +643,6 @@ def build_daily_model(form_df: pd.DataFrame) -> pd.DataFrame:
         + daily["Depression - Withdrawal"]
     )
 
-    # ---------- Psychosis contributions ----------
     daily["Psychosis - Unusual perceptions"] = safe_series(daily, COL_UNUSUAL) * 5
     daily["Psychosis - Suspiciousness"] = safe_series(daily, COL_SUSPICIOUS) * 5
     daily["Psychosis - Certainty"] = safe_series(daily, COL_CERTAINTY) * 4
@@ -635,17 +660,13 @@ def build_daily_model(form_df: pd.DataFrame) -> pd.DataFrame:
         + daily["Psychosis - Signals"]
     )
 
-    # ---------- Mixed contributions ----------
-    # Per your instruction: combine mania + depression + psychosis
     daily["Mixed - Mania"] = daily["Mania Score"] * 0.35
     daily["Mixed - Depression"] = daily["Depression Score"] * 0.35
     daily["Mixed - Psychosis"] = daily["Psychosis Score"] * 0.30
-
     daily["Mixed Score"] = clamp_0_100(
         daily["Mixed - Mania"] + daily["Mixed - Depression"] + daily["Mixed - Psychosis"]
     )
 
-    # ---------- Signal totals ----------
     if signal_columns:
         daily["Total Signals"] = daily[signal_columns].sum(axis=1)
     else:
@@ -654,16 +675,105 @@ def build_daily_model(form_df: pd.DataFrame) -> pd.DataFrame:
     mania_available = [c for c in MANIA_SIGNAL_COLUMNS if c in daily.columns]
     depression_available = [c for c in DEPRESSION_SIGNAL_COLUMNS if c in daily.columns]
     psychosis_available = [c for c in PSYCHOSIS_SIGNAL_COLUMNS if c in daily.columns]
-    mixed_available = [c for c in MIXED_SIGNAL_COLUMNS if c in daily.columns]
 
     daily["Mania Signals"] = daily[mania_available].sum(axis=1) if mania_available else 0
     daily["Depression Signals"] = daily[depression_available].sum(axis=1) if depression_available else 0
     daily["Psychosis Signals"] = daily[psychosis_available].sum(axis=1) if psychosis_available else 0
 
-
     daily["DateLabel"] = pd.to_datetime(daily["Date"]).dt.strftime("%Y-%m-%d")
 
     return daily
+
+
+def build_daily_summary_cards(daily_df: pd.DataFrame):
+    if daily_df.empty:
+        return None
+
+    df = daily_df.copy()
+    last5 = df.tail(5)
+    latest = last5.iloc[-1]
+
+    def daily_level(score):
+        if score >= 70:
+            return "High"
+        if score >= 40:
+            return "Medium"
+        return "Low"
+
+    def daily_trend(series):
+        return trend_from_series(series, threshold=5.0)
+
+    def daily_confidence(series, level):
+        non_null = series.dropna()
+        dummy_df = pd.DataFrame({"x": non_null})
+        return confidence_from_entries(dummy_df, daily_trend(series), level)
+
+    def top_reasons(row, cols, prefix_to_remove):
+        pairs = [(c, float(row.get(c, 0) or 0)) for c in cols if c in row.index]
+        pairs = sorted(pairs, key=lambda x: x[1], reverse=True)
+        cleaned = []
+        for c, v in pairs:
+            if v > 0:
+                cleaned.append(c.replace(prefix_to_remove, ""))
+        return cleaned[:3]
+
+    mania_level = daily_level(float(latest["Mania Score"]))
+    depression_level = daily_level(float(latest["Depression Score"]))
+    psychosis_level = daily_level(float(latest["Psychosis Score"]))
+
+    summary = {
+        "Mania": {
+            "score": float(latest["Mania Score"]),
+            "level": mania_level,
+            "trend": daily_trend(last5["Mania Score"]),
+            "confidence": daily_confidence(last5["Mania Score"], mania_level),
+            "reasons": top_reasons(
+                latest,
+                [
+                    "Mania - Energy",
+                    "Mania - Mental speed",
+                    "Mania - Impulsivity",
+                    "Mania - Less sleep",
+                    "Mania - Up signals",
+                ],
+                "Mania - ",
+            ),
+        },
+        "Depression": {
+            "score": float(latest["Depression Score"]),
+            "level": depression_level,
+            "trend": daily_trend(last5["Depression Score"]),
+            "confidence": daily_confidence(last5["Depression Score"], depression_level),
+            "reasons": top_reasons(
+                latest,
+                [
+                    "Depression - Low mood",
+                    "Depression - Low energy",
+                    "Depression - Low motivation",
+                    "Depression - Withdrawal",
+                ],
+                "Depression - ",
+            ),
+        },
+        "Psychosis": {
+            "score": float(latest["Psychosis Score"]),
+            "level": psychosis_level,
+            "trend": daily_trend(last5["Psychosis Score"]),
+            "confidence": daily_confidence(last5["Psychosis Score"], psychosis_level),
+            "reasons": top_reasons(
+                latest,
+                [
+                    "Psychosis - Unusual perceptions",
+                    "Psychosis - Suspiciousness",
+                    "Psychosis - Certainty",
+                    "Psychosis - Signals",
+                ],
+                "Psychosis - ",
+            ),
+        },
+    }
+
+    return summary
 
 
 # =========================
@@ -686,6 +796,7 @@ form_data = prepare_form(form_df)
 snapshot_data = prepare_snapshot(snapshot_df_raw)
 snapshot_model_summary, snapshot_model_data = build_snapshot_model(snapshot_df_raw)
 daily_model_data = build_daily_model(form_df)
+daily_model_summary = build_daily_summary_cards(daily_model_data)
 
 
 # =========================
@@ -722,11 +833,23 @@ with tab_warnings:
 # =========================
 with tab_daily_model:
     st.subheader("Daily Model")
-    st.caption("All Daily Model charts use DATE only, not timestamp.")
 
     if daily_model_data.empty:
         st.info("No daily model data available.")
     else:
+        if daily_model_summary:
+            st.markdown("### Current Daily State")
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                render_daily_card("Mania", daily_model_summary["Mania"])
+
+            with c2:
+                render_daily_card("Depression", daily_model_summary["Depression"])
+
+            with c3:
+                render_daily_card("Psychosis", daily_model_summary["Psychosis"])
+
         st.markdown("### Daily state scores")
         state_chart = daily_model_data[
             ["DateLabel", "Mania Score", "Depression Score", "Psychosis Score", "Mixed Score"]
@@ -932,7 +1055,7 @@ with tab_snapshot_model:
 # =========================
 with tab_form_data:
     st.subheader("Form Data")
-    st.caption("Imported from Form Responses. Rolling averages are DATE-based, not datetime-based.")
+    st.caption("Imported from Form Responses. Rolling averages are date-based.")
 
     if form_data.empty:
         st.info("No form data available.")
@@ -974,7 +1097,7 @@ with tab_form_data:
 # =========================
 with tab_snapshot_data:
     st.subheader("Snapshot Data")
-    st.caption("Imported from Quick Form Responses. Trends are DATETIME-based.")
+    st.caption("Imported from Quick Form Responses. Trends are datetime-based.")
 
     if snapshot_data.empty:
         st.info("No snapshot data available.")
