@@ -1105,7 +1105,214 @@ tab_dashboard, tab_warnings, tab_daily_model, tab_snapshot_model, tab_form_data,
 # =========================
 with tab_dashboard:
     st.subheader("Dashboard")
-    st.write("Blank section ready for redesign.")
+
+    # Refresh summaries using current settings
+    daily_model_data = build_daily_model(form_df, st.session_state["daily_settings"])
+    daily_model_summary = build_daily_summary_cards(
+        daily_model_data,
+        st.session_state["daily_settings"],
+    )
+    snapshot_model_summary, snapshot_model_data = build_snapshot_model(
+        snapshot_df_raw,
+        st.session_state["snapshot_settings"],
+    )
+
+    latest_form_signals, latest_form_findings = get_latest_form_warning_items(form_df)
+    latest_snapshot_signals, latest_snapshot_findings = get_latest_snapshot_warning_items(snapshot_df_raw)
+    daily_model_findings, snapshot_model_findings = get_model_concerning_findings(
+        daily_model_summary,
+        snapshot_model_summary,
+    )
+
+    # =========================
+    # Current State
+    # =========================
+    st.markdown("### Current state")
+
+    left, right = st.columns(2)
+
+    with left:
+        st.markdown("#### Daily Model")
+        if daily_model_summary:
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                render_daily_card("Depression", daily_model_summary["Depression"])
+            with c2:
+                render_daily_card("Mania", daily_model_summary["Mania"])
+            with c3:
+                render_daily_card("Psychosis", daily_model_summary["Psychosis"])
+        else:
+            st.info("No daily model summary available.")
+
+    with right:
+        st.markdown("#### Snapshot Model")
+        if snapshot_model_summary:
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                render_status_card(
+                    "Depression",
+                    snapshot_model_summary["Depression"]["score"],
+                    snapshot_model_summary["Depression"]["max_score"],
+                    snapshot_model_summary["Depression"]["level"],
+                    snapshot_model_summary["Depression"]["trend"],
+                    snapshot_model_summary["Depression"]["confidence"],
+                )
+            with c2:
+                render_status_card(
+                    "Mania",
+                    snapshot_model_summary["Mania"]["score"],
+                    snapshot_model_summary["Mania"]["max_score"],
+                    snapshot_model_summary["Mania"]["level"],
+                    snapshot_model_summary["Mania"]["trend"],
+                    snapshot_model_summary["Mania"]["confidence"],
+                )
+            with c3:
+                render_status_card(
+                    "Psychosis",
+                    snapshot_model_summary["Psychosis"]["score"],
+                    snapshot_model_summary["Psychosis"]["max_score"],
+                    snapshot_model_summary["Psychosis"]["level"],
+                    snapshot_model_summary["Psychosis"]["trend"],
+                    snapshot_model_summary["Psychosis"]["confidence"],
+                )
+
+            if snapshot_model_summary["Mixed"]["active"]:
+                st.error(
+                    f"Mixed state active — Trend: {snapshot_model_summary['Mixed']['trend']} | "
+                    f"Confidence: {snapshot_model_summary['Mixed']['confidence']}"
+                )
+            else:
+                st.success("Mixed state not currently active.")
+        else:
+            st.info("No snapshot model summary available.")
+
+    # =========================
+    # Key Warnings
+    # =========================
+    st.markdown("### Key warnings")
+
+    warn_left, warn_right = st.columns(2)
+
+    with warn_left:
+        render_signal_box(
+            "Daily questionnaire",
+            latest_form_findings + daily_model_findings + latest_form_signals,
+            tone="error" if (latest_form_findings or daily_model_findings) else "warning",
+        )
+
+    with warn_right:
+        render_signal_box(
+            "Snapshot questionnaire",
+            latest_snapshot_findings + snapshot_model_findings + latest_snapshot_signals,
+            tone="error" if (latest_snapshot_findings or snapshot_model_findings) else "warning",
+        )
+
+    # =========================
+    # Recent Trends
+    # =========================
+    st.markdown("### Recent trends")
+
+    if not daily_model_data.empty:
+        trend_df = daily_model_data.copy()
+
+        min_date = pd.to_datetime(trend_df["Date"]).min().date()
+        max_date = pd.to_datetime(trend_df["Date"]).max().date()
+
+        quick_range = st.selectbox(
+            "Trend window",
+            ["Last 7 days", "Last 14 days", "Last 30 days", "All data"],
+            index=1,
+            key="dashboard_trend_window",
+        )
+
+        if quick_range == "Last 7 days":
+            start_date = max_date - pd.Timedelta(days=6)
+        elif quick_range == "Last 14 days":
+            start_date = max_date - pd.Timedelta(days=13)
+        elif quick_range == "Last 30 days":
+            start_date = max_date - pd.Timedelta(days=29)
+        else:
+            start_date = min_date
+
+        trend_df = trend_df[
+            (pd.to_datetime(trend_df["Date"]).dt.date >= start_date) &
+            (pd.to_datetime(trend_df["Date"]).dt.date <= max_date)
+        ].copy()
+
+        trend_cols = [
+            "Depression Score",
+            "Mania Score",
+            "Psychosis Score",
+            "Mixed Score",
+        ]
+
+        st.line_chart(
+            trend_df[["DateLabel"] + trend_cols].set_index("DateLabel")
+        )
+    else:
+        st.info("No daily trend data available.")
+
+    # =========================
+    # Signals Overview
+    # =========================
+    st.markdown("### Signals overview")
+
+    if not daily_model_data.empty:
+        latest_daily = daily_model_data.iloc[-1]
+
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Total signals", int(latest_daily.get("Total Signals", 0)))
+        with m2:
+            st.metric("Depression signals", int(latest_daily.get("Depression Signals", 0)))
+        with m3:
+            st.metric("Mania signals", int(latest_daily.get("Mania Signals", 0)))
+        with m4:
+            st.metric("Psychosis signals", int(latest_daily.get("Psychosis Signals", 0)))
+    else:
+        st.info("No signal overview available.")
+
+    # =========================
+    # Recent Activity
+    # =========================
+    st.markdown("### Recent activity")
+
+    a1, a2, a3, a4 = st.columns(4)
+
+    latest_form_time = None
+    latest_snapshot_time = None
+
+    if not form_df.empty and "Timestamp" in form_df.columns:
+        form_ts = pd.to_datetime(form_df["Timestamp"], errors="coerce").dropna()
+        if not form_ts.empty:
+            latest_form_time = form_ts.max()
+
+    if not snapshot_df_raw.empty and "Timestamp" in snapshot_df_raw.columns:
+        snap_ts = pd.to_datetime(snapshot_df_raw["Timestamp"], errors="coerce").dropna()
+        if not snap_ts.empty:
+            latest_snapshot_time = snap_ts.max()
+
+    days_tracked = len(daily_model_data) if not daily_model_data.empty else 0
+
+    snapshot_last_7 = 0
+    if latest_snapshot_time is not None and not snapshot_df_raw.empty and "Timestamp" in snapshot_df_raw.columns:
+        snap_ts = pd.to_datetime(snapshot_df_raw["Timestamp"], errors="coerce").dropna()
+        snapshot_last_7 = int((snap_ts >= (latest_snapshot_time - pd.Timedelta(days=7))).sum())
+
+    with a1:
+        st.metric(
+            "Latest form entry",
+            latest_form_time.strftime("%Y-%m-%d %H:%M") if latest_form_time is not None else "N/A"
+        )
+    with a2:
+        st.metric(
+            "Latest snapshot entry",
+            latest_snapshot_time.strftime("%Y-%m-%d %H:%M") if latest_snapshot_time is not None else "N/A"
+        )
+    with a3:
+        st.metric("Days tracked", days_tracked)
+    with a4:
+        st.metric("Snapshot entries (last 7d)", snapshot_last_7)
 
 
 # =========================
