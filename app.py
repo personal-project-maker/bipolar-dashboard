@@ -1122,14 +1122,18 @@ with tab_warnings:
 
     st.markdown("### Current State — Daily Model")
     if daily_model_summary:
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            render_daily_card("Mania", daily_model_summary["Mania"])
-        with c2:
-            render_daily_card("Depression", daily_model_summary["Depression"])
-        with c3:
-            render_daily_card("Psychosis", daily_model_summary["Psychosis"])
-    else:
+if daily_model_summary:
+    st.markdown("### Current Daily State")
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        render_daily_card("Depression", daily_model_summary["Depression"])
+
+    with c2:
+        render_daily_card("Mania", daily_model_summary["Mania"])
+
+    with c3:
+        render_daily_card("Psychosis", daily_model_summary["Psychosis"])
         st.info("No Daily Model summary available.")
 
     st.markdown("### Current State — Snapshot Model")
@@ -1374,18 +1378,14 @@ with tab_daily_model:
     if daily_model_data.empty:
         st.info("No daily model data available.")
     else:
-        if daily_model_summary:
-            st.markdown("### Current Daily State")
-            c1, c2, c3 = st.columns(3)
-
-            with c1:
-                render_daily_card("Mania", daily_model_summary["Mania"])
-
-            with c2:
-                render_daily_card("Depression", daily_model_summary["Depression"])
-
-            with c3:
-                render_daily_card("Psychosis", daily_model_summary["Psychosis"])
+       if daily_model_summary:
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        render_daily_card("Depression", daily_model_summary["Depression"])
+    with c2:
+        render_daily_card("Mania", daily_model_summary["Mania"])
+    with c3:
+        render_daily_card("Psychosis", daily_model_summary["Psychosis"])
 
         render_filtered_chart(
             daily_model_data,
