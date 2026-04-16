@@ -1122,7 +1122,6 @@ with tab_warnings:
 
     st.markdown("### Current State — Daily Model")
     if daily_model_summary:
-if daily_model_summary:
     st.markdown("### Current Daily State")
     c1, c2, c3 = st.columns(3)
 
