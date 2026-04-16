@@ -659,7 +659,7 @@ def build_daily_model(form_df: pd.DataFrame) -> pd.DataFrame:
     daily["Mania Signals"] = daily[mania_available].sum(axis=1) if mania_available else 0
     daily["Depression Signals"] = daily[depression_available].sum(axis=1) if depression_available else 0
     daily["Psychosis Signals"] = daily[psychosis_available].sum(axis=1) if psychosis_available else 0
-    daily["Mixed Signals"] = daily[mixed_available].sum(axis=1) if mixed_available else 0
+
 
     daily["DateLabel"] = pd.to_datetime(daily["Date"]).dt.strftime("%Y-%m-%d")
 
@@ -822,7 +822,6 @@ with tab_daily_model:
                 "Mania Signals",
                 "Depression Signals",
                 "Psychosis Signals",
-                "Mixed Signals",
             ]
         ].set_index("DateLabel")
         st.bar_chart(signal_breakdown_chart)
@@ -839,7 +838,6 @@ with tab_daily_model:
                 "Mania Signals",
                 "Depression Signals",
                 "Psychosis Signals",
-                "Mixed Signals",
             ]
             if c in daily_model_data.columns
         ]
