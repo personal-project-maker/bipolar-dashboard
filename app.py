@@ -1378,7 +1378,7 @@ with tab_daily_model:
         st.info("No daily model data available.")
     else:
        if daily_model_summary:
-    c1, c2, c3 = st.columns(3)
+        c1, c2, c3 = st.columns(3)
     with c1:
         render_daily_card("Depression", daily_model_summary["Depression"])
     with c2:
