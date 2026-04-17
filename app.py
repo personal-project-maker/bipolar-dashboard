@@ -127,7 +127,6 @@ DEFAULT_DAILY_SETTINGS = {
     "high_threshold_pct": 66.0,
     "trend_threshold_pct": 8.0,
 
-    # new alert / baseline settings
     "baseline_window_days": 14,
     "anomaly_z_threshold": 1.5,
     "high_anomaly_z_threshold": 2.5,
@@ -158,6 +157,27 @@ DEFAULT_SNAPSHOT_SETTINGS = {
     "medium_threshold_pct": 33.0,
     "high_threshold_pct": 66.0,
     "trend_threshold_pct": 8.0,
+}
+
+REASON_LABELS = {
+    "Depression - Low Mood Score": "Lower mood",
+    "Depression - Low Sleep Quality": "Poor sleep quality",
+    "Depression - Low Energy": "Lower energy",
+    "Depression - Low Mental Speed": "Slower mental speed",
+    "Depression - Low Motivation": "Lower motivation",
+    "Depression - Flags": "Depression-related flags",
+
+    "Mania - High Mood Score": "Higher mood",
+    "Mania - Low Sleep Quality": "Poor sleep / reduced restorative sleep",
+    "Mania - High Energy": "Higher energy",
+    "Mania - High Mental Speed": "Faster mental speed",
+    "Mania - High Motivation": "Higher drive / motivation",
+    "Mania - Flags": "Mania-related flags",
+
+    "Psychosis - Unusual perceptions": "Unusual perceptions",
+    "Psychosis - Suspiciousness": "Suspiciousness",
+    "Psychosis - Certainty": "Strong certainty in unusual beliefs",
+    "Psychosis - Flags": "Psychosis-related flags",
 }
 
 
@@ -713,13 +733,23 @@ def render_status_card(title: str, score_pct: float, level: str, trend: str, con
 def render_daily_card(title: str, data: dict):
     color = status_color(data["level"])
     conf_color = confidence_color(data["confidence"])
-    reasons_html = "<br>".join([f"• {r}" for r in data.get("reasons", [])]) if data.get("reasons") else "No strong drivers"
+
+    reasons = data.get("reasons", [])
+    reasons_html = "".join([f"<li>{r}</li>" for r in reasons]) if reasons else "<li>No strong drivers</li>"
 
     unusual_html = ""
-    if "baseline_note" in data and data["baseline_note"]:
+    if data.get("baseline_note"):
         unusual_html = f"""
         <div style="font-size: 15px; margin-bottom: 8px;">
-            <strong>Compared with usual:</strong> {data["baseline_note"]}
+            <strong>Compared with usual:</strong> {data['baseline_note']}
+        </div>
+        """
+
+    baseline_detail_html = ""
+    if data.get("baseline_z_text"):
+        baseline_detail_html = f"""
+        <div style="font-size: 13px; color: #666; margin-bottom: 8px;">
+            Baseline detail: {data['baseline_z_text']}
         </div>
         """
 
@@ -738,7 +768,9 @@ def render_daily_card(title: str, data: dict):
             <div style="font-size: 16px; margin-bottom: 6px;">
                 <strong>Current state:</strong> {data['level']} ({data['score_pct']:.1f}%)
             </div>
-            <div style="font-size: 16px; margin-bottom: 6px;"><strong>Trend:</strong> {data['trend']}</div>
+            <div style="font-size: 16px; margin-bottom: 6px;">
+                <strong>Recent direction:</strong> {data['trend']}
+            </div>
             <div style="font-size: 16px; margin-bottom: 8px;">
                 <strong>Confidence:</strong>
                 <span style="
@@ -752,9 +784,12 @@ def render_daily_card(title: str, data: dict):
                 </span>
             </div>
             {unusual_html}
+            {baseline_detail_html}
             <div style="font-size: 16px;">
-                <strong>Reasons:</strong><br>
-                {reasons_html}
+                <strong>Main drivers:</strong>
+                <ul style="margin-top: 6px; margin-bottom: 0; padding-left: 20px;">
+                    {reasons_html}
+                </ul>
             </div>
         </div>
         """,
@@ -1161,14 +1196,18 @@ def build_domain_summary(df: pd.DataFrame, settings: dict, domains: list[str], i
         diff_val = to_float(latest.get(baseline_diff_col, 0.0), 0.0)
 
         baseline_note = ""
+        baseline_z_text = ""
         if abs(z_val) >= high_anomaly_thr:
             direction = "higher" if diff_val >= 0 else "lower"
-            baseline_note = f"much {direction} than your recent baseline ({diff_val:+.1f} points, z={z_val:+.2f})"
+            baseline_note = f"much {direction} than your recent baseline ({diff_val:+.1f} points)"
+            baseline_z_text = f"z={z_val:+.2f}"
         elif abs(z_val) >= anomaly_thr:
             direction = "higher" if diff_val >= 0 else "lower"
-            baseline_note = f"noticeably {direction} than your recent baseline ({diff_val:+.1f} points, z={z_val:+.2f})"
+            baseline_note = f"noticeably {direction} than your recent baseline ({diff_val:+.1f} points)"
+            baseline_z_text = f"z={z_val:+.2f}"
         elif pd.notna(latest.get(f"{name} Baseline %", pd.NA)):
             baseline_note = f"close to your recent baseline ({diff_val:+.1f} points)"
+            baseline_z_text = f"z={z_val:+.2f}"
 
         item = {
             "score_pct": score_pct,
@@ -1178,16 +1217,21 @@ def build_domain_summary(df: pd.DataFrame, settings: dict, domains: list[str], i
             "baseline_z": z_val,
             "baseline_diff_pct": diff_val,
             "baseline_note": baseline_note,
+            "baseline_z_text": baseline_z_text,
         }
 
         if include_reasons:
             component_cols = [c for c in df.columns if c.startswith(f"{name} - ")]
-            reasons = sorted(
-                [(c.replace(f"{name} - ", ""), to_float(latest.get(c, 0.0))) for c in component_cols],
+            raw_reasons = sorted(
+                [(c, to_float(latest.get(c, 0.0))) for c in component_cols],
                 key=lambda x: x[1],
                 reverse=True,
             )
-            item["reasons"] = [label for label, value in reasons if value > 0][:3]
+            item["reasons"] = [
+                REASON_LABELS.get(col, col.replace(f"{name} - ", ""))
+                for col, value in raw_reasons
+                if value > 0
+            ][:3]
 
         summary[name] = item
 
@@ -1379,7 +1423,7 @@ def build_alerts(daily_model_data: pd.DataFrame, daily_summary: dict | None, sna
             details.append(f"{name} score is {item['level'].lower()} at {item['score_pct']:.1f}%.")
 
         if item["trend"] in ["Rising", "Falling"]:
-            details.append(f"Recent trend is {item['trend'].lower()}.")
+            details.append(f"Recent direction is {item['trend'].lower()}.")
 
         z_val = to_float(item.get("baseline_z", 0.0), 0.0)
         diff_val = to_float(item.get("baseline_diff_pct", 0.0), 0.0)
@@ -1413,7 +1457,7 @@ def build_alerts(daily_model_data: pd.DataFrame, daily_summary: dict | None, sna
 
         if severity:
             title = f"{name} pattern"
-            summary = f"{name} looks {item['level'].lower()} with a {item['trend'].lower()} trend."
+            summary = f"{name} looks {item['level'].lower()} with a {item['trend'].lower()} recent direction."
             if abs(z_val) >= anomaly_thr:
                 summary += " It is also unusual relative to your recent baseline."
 
