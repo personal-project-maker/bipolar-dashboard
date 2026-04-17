@@ -170,7 +170,7 @@ SNAPSHOT_PSYCHOSIS_COLS = [
 # =========================
 DEFAULT_DAILY_SETTINGS = {
     # depression drivers
-    "dep_low_mood_weight": 1.0,
+    "dep_low_mood_weight": 4.0,
     "dep_low_sleep_quality_weight": 1.0,
     "dep_low_energy_weight": 1.0,
     "dep_low_mental_speed_weight": 1.0,
@@ -178,7 +178,7 @@ DEFAULT_DAILY_SETTINGS = {
     "dep_flag_weight": 1.0,
 
     # mania drivers
-    "mania_high_mood_weight": 1.0,
+    "mania_high_mood_weight": 4.0,
     "mania_low_sleep_quality_weight": 1.0,
     "mania_high_energy_weight": 1.0,
     "mania_high_mental_speed_weight": 1.0,
@@ -188,7 +188,7 @@ DEFAULT_DAILY_SETTINGS = {
     # psychosis drivers
     "psych_unusual_weight": 1.0,
     "psych_suspicious_weight": 1.0,
-    "psych_certainty_weight": 1.0,
+    "psych_certainty_weight": 3.0,
     "psych_flag_weight": 1.0,
 
     # mixed
@@ -204,14 +204,14 @@ DEFAULT_DAILY_SETTINGS = {
 }
 
 DEFAULT_SNAPSHOT_SETTINGS = {
-    "dep_very_low_mood": 1.0,
-    "dep_somewhat_low_mood": 1.0,
+    "dep_very_low_mood": 4.0,
+    "dep_somewhat_low_mood": 2.0,
     "dep_withdrawal": 1.0,
     "dep_slowed_down": 1.0,
     "dep_self_care": 1.0,
 
-    "mania_very_high_mood": 1.0,
-    "mania_somewhat_high_mood": 1.0,
+    "mania_very_high_mood": 4.0,
+    "mania_somewhat_high_mood": 2.0,
     "mania_agitation": 1.0,
     "mania_racing": 1.0,
     "mania_driven": 1.0,
@@ -1625,7 +1625,6 @@ with tab_daily_model:
                 "Depression Score %",
                 "Mania Score %",
                 "Psychosis Score %",
-                "Depression - Low Sleep Quality",
                 "Mixed Score %",
             ],
             key_prefix="daily_mixed_drivers",
