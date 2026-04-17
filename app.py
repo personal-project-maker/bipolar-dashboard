@@ -105,28 +105,23 @@ DEFAULT_DAILY_SETTINGS = {
     "dep_low_mental_speed_weight": 1.0,
     "dep_low_motivation_weight": 1.0,
     "dep_flag_weight": 1.0,
-
     "mania_high_mood_weight": 4.0,
     "mania_low_sleep_quality_weight": 1.0,
     "mania_high_energy_weight": 1.0,
     "mania_high_mental_speed_weight": 1.0,
     "mania_high_motivation_weight": 1.0,
     "mania_flag_weight": 1.0,
-
     "psych_unusual_weight": 1.0,
     "psych_suspicious_weight": 1.0,
     "psych_certainty_weight": 3.0,
     "psych_flag_weight": 1.0,
-
     "mixed_dep_weight": 0.4,
     "mixed_mania_weight": 0.4,
     "mixed_psych_weight": 0.2,
     "mixed_low_sleep_quality_weight": 0.5,
-
     "medium_threshold_pct": 33.0,
     "high_threshold_pct": 66.0,
     "trend_threshold_pct": 8.0,
-
     "baseline_window_days": 14,
     "anomaly_z_threshold": 1.5,
     "high_anomaly_z_threshold": 2.5,
@@ -139,21 +134,17 @@ DEFAULT_SNAPSHOT_SETTINGS = {
     "dep_withdrawal": 1.0,
     "dep_slowed_down": 1.0,
     "dep_self_care": 1.0,
-
     "mania_very_high_mood": 4.0,
     "mania_somewhat_high_mood": 2.0,
     "mania_agitation": 1.0,
     "mania_racing": 1.0,
     "mania_driven": 1.0,
-
     "psych_hearing_seeing": 1.0,
     "psych_paranoia": 1.0,
     "psych_beliefs": 1.0,
-
     "mixed_dep_weight": 0.4,
     "mixed_mania_weight": 0.4,
     "mixed_psych_weight": 0.2,
-
     "medium_threshold_pct": 33.0,
     "high_threshold_pct": 66.0,
     "trend_threshold_pct": 8.0,
@@ -166,14 +157,12 @@ REASON_LABELS = {
     "Depression - Low Mental Speed": "Slower mental speed",
     "Depression - Low Motivation": "Lower motivation",
     "Depression - Flags": "Depression-related flags",
-
     "Mania - High Mood Score": "Higher mood",
     "Mania - Low Sleep Quality": "Poor sleep / reduced restorative sleep",
     "Mania - High Energy": "Higher energy",
     "Mania - High Mental Speed": "Faster mental speed",
     "Mania - High Motivation": "Higher drive / motivation",
     "Mania - Flags": "Mania-related flags",
-
     "Psychosis - Unusual perceptions": "Unusual perceptions",
     "Psychosis - Suspiciousness": "Suspiciousness",
     "Psychosis - Certainty": "Strong certainty in unusual beliefs",
@@ -654,30 +643,6 @@ def trend_from_deviation_pct(dev_pct, threshold_pct) -> str:
     return "Stable"
 
 
-def status_color(level: str) -> str:
-    if level == "High":
-        return "#d32f2f"
-    if level == "Medium":
-        return "#f9a825"
-    return "#2e7d32"
-
-
-def confidence_color(confidence: str) -> str:
-    if confidence == "High":
-        return "#2e7d32"
-    if confidence == "Medium":
-        return "#f9a825"
-    return "#757575"
-
-
-def alert_color(severity: str) -> str:
-    if severity == "High concern":
-        return "#d32f2f"
-    if severity == "Pay attention today":
-        return "#f57c00"
-    return "#1976d2"
-
-
 def alert_rank(severity: str) -> int:
     return {
         "Monitor": 1,
@@ -687,174 +652,69 @@ def alert_rank(severity: str) -> int:
 
 
 # =========================================================
-# UI HELPERS
+# UI HELPERS - STREAMLIT NATIVE
 # =========================================================
 def render_status_card(title: str, score_pct: float, level: str, trend: str, confidence: str):
-    color = status_color(level)
-    conf_color = confidence_color(confidence)
-
-    st.markdown(
-        f"""
-        <div style="
-            border: 1px solid #ddd;
-            border-left: 8px solid {color};
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 12px;
-            background-color: #fafafa;
-            min-height: 170px;
-        ">
-            <div style="font-size: 22px; font-weight: 700; margin-bottom: 6px;">{title}</div>
-            <div style="font-size: 16px; margin-bottom: 6px;">
-                <strong>Current:</strong> {level} ({score_pct:.1f}%)
-            </div>
-            <div style="font-size: 16px; margin-bottom: 6px;">
-                <strong>Trend:</strong> {trend}
-            </div>
-            <div style="font-size: 16px;">
-                <strong>Confidence:</strong>
-                <span style="
-                    display: inline-block;
-                    padding: 2px 8px;
-                    border-radius: 999px;
-                    background-color: {conf_color};
-                    color: white;
-                    font-weight: 600;
-                ">
-                    {confidence}
-                </span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"#### {title}")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Current", f"{level} ({score_pct:.1f}%)")
+        st.write(f"**Trend:** {trend}")
+    with c2:
+        st.write(f"**Confidence:** {confidence}")
 
 
 def render_daily_card(title: str, data: dict):
-    color = status_color(data["level"])
-    conf_color = confidence_color(data["confidence"])
+    st.markdown(f"#### {title}")
 
-    reasons = data.get("reasons", [])
-    reasons_html = "".join([f"<li>{r}</li>" for r in reasons]) if reasons else "<li>No strong drivers</li>"
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Current state", f"{data['level']} ({data['score_pct']:.1f}%)")
+        st.write(f"**Recent direction:** {data['trend']}")
+    with c2:
+        st.write(f"**Confidence:** {data['confidence']}")
 
-    unusual_html = ""
     if data.get("baseline_note"):
-        unusual_html = f"""
-        <div style="font-size: 15px; margin-bottom: 8px;">
-            <strong>Compared with usual:</strong> {data['baseline_note']}
-        </div>
-        """
+        st.write(f"**Compared with usual:** {data['baseline_note']}")
 
-    baseline_detail_html = ""
     if data.get("baseline_z_text"):
-        baseline_detail_html = f"""
-        <div style="font-size: 13px; color: #666; margin-bottom: 8px;">
-            Baseline detail: {data['baseline_z_text']}
-        </div>
-        """
+        with st.expander("Baseline detail"):
+            st.write(data["baseline_z_text"])
 
-    st.markdown(
-        f"""
-        <div style="
-            border: 1px solid #ddd;
-            border-left: 8px solid {color};
-            border-radius: 12px;
-            padding: 16px;
-            background-color: #fafafa;
-            margin-bottom: 12px;
-            min-height: 250px;
-        ">
-            <div style="font-size: 22px; font-weight: 700; margin-bottom: 6px;">{title}</div>
-            <div style="font-size: 16px; margin-bottom: 6px;">
-                <strong>Current state:</strong> {data['level']} ({data['score_pct']:.1f}%)
-            </div>
-            <div style="font-size: 16px; margin-bottom: 6px;">
-                <strong>Recent direction:</strong> {data['trend']}
-            </div>
-            <div style="font-size: 16px; margin-bottom: 8px;">
-                <strong>Confidence:</strong>
-                <span style="
-                    background-color:{conf_color};
-                    color:white;
-                    padding:2px 8px;
-                    border-radius:999px;
-                    font-weight:600;
-                ">
-                    {data['confidence']}
-                </span>
-            </div>
-            {unusual_html}
-            {baseline_detail_html}
-            <div style="font-size: 16px;">
-                <strong>Main drivers:</strong>
-                <ul style="margin-top: 6px; margin-bottom: 0; padding-left: 20px;">
-                    {reasons_html}
-                </ul>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.write("**Main drivers:**")
+    reasons = data.get("reasons", [])
+    if reasons:
+        for reason in reasons:
+            st.write(f"- {reason}")
+    else:
+        st.write("- No strong drivers")
 
 
 def render_signal_box(title: str, items: list[str], tone: str = "info"):
+    content = "\n".join([f"- {i}" for i in items]) if items else "- None"
+
     if tone == "error":
-        bg = "#fdecea"
-        border = "#d32f2f"
+        st.error(f"**{title}**\n\n{content}")
     elif tone == "warning":
-        bg = "#fff8e1"
-        border = "#f9a825"
+        st.warning(f"**{title}**\n\n{content}")
     else:
-        bg = "#eef6ff"
-        border = "#1976d2"
-
-    content = "<br>".join([f"• {i}" for i in items]) if items else "• None"
-
-    st.markdown(
-        f"""
-        <div style="
-            border: 1px solid {border};
-            border-left: 8px solid {border};
-            border-radius: 12px;
-            padding: 14px;
-            background-color: {bg};
-            margin-bottom: 12px;
-        ">
-            <div style="font-size: 18px; font-weight: 700; margin-bottom: 6px;">{title}</div>
-            <div style="font-size: 15px;">{content}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        st.info(f"**{title}**\n\n{content}")
 
 
 def render_alert_card(alert: dict):
-    color = alert_color(alert["severity"])
-    details_html = "<br>".join([f"• {d}" for d in alert.get("details", [])]) if alert.get("details") else ""
-
-    st.markdown(
-        f"""
-        <div style="
-            border: 1px solid #ddd;
-            border-left: 8px solid {color};
-            border-radius: 12px;
-            padding: 14px;
-            background-color: #fafafa;
-            margin-bottom: 12px;
-            min-height: 160px;
-        ">
-            <div style="font-size: 20px; font-weight: 700; margin-bottom: 6px;">{alert['title']}</div>
-            <div style="font-size: 15px; margin-bottom: 8px;">
-                <strong>Status:</strong> {alert['severity']}
-            </div>
-            <div style="font-size: 15px; margin-bottom: 8px;">
-                <strong>Summary:</strong> {alert['summary']}
-            </div>
-            <div style="font-size: 15px;">{details_html}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    details = "\n".join([f"- {d}" for d in alert.get("details", [])]) if alert.get("details") else "- None"
+    content = (
+        f"**Status:** {alert['severity']}\n\n"
+        f"**Summary:** {alert['summary']}\n\n"
+        f"**Details:**\n{details}"
     )
+
+    if alert["severity"] == "High concern":
+        st.error(f"**{alert['title']}**\n\n{content}")
+    elif alert["severity"] == "Pay attention today":
+        st.warning(f"**{alert['title']}**\n\n{content}")
+    else:
+        st.info(f"**{alert['title']}**\n\n{content}")
 
 
 def render_summary_cards(summary: dict, detailed: bool = False):
@@ -865,16 +725,17 @@ def render_summary_cards(summary: dict, detailed: bool = False):
     cols = st.columns(len(summary))
     for col, name in zip(cols, summary.keys()):
         with col:
-            if detailed:
-                render_daily_card(name, summary[name])
-            else:
-                render_status_card(
-                    name,
-                    summary[name]["score_pct"],
-                    summary[name]["level"],
-                    summary[name]["trend"],
-                    summary[name]["confidence"],
-                )
+            with st.container(border=True):
+                if detailed:
+                    render_daily_card(name, summary[name])
+                else:
+                    render_status_card(
+                        name,
+                        summary[name]["score_pct"],
+                        summary[name]["level"],
+                        summary[name]["trend"],
+                        summary[name]["confidence"],
+                    )
 
 
 def render_settings_form(session_key: str, settings_ui: dict, columns_per_row: int = 3):
@@ -1686,7 +1547,6 @@ def render_dashboard_page(
         st.info("No active alerts are being generated from the current rules.")
 
     st.markdown("### Current state")
-
     st.markdown("#### Daily Model")
     render_summary_cards(daily_model_summary, detailed=True)
 
