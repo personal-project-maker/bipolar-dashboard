@@ -1,5 +1,10 @@
 # =========================================================
-# WELLBEING DASHBOARD
+# WELLBEING DASHBOARD — SHEET-DRIVEN VERSION
+# Reads directly from:
+# - Form Responses
+# - Quick Form Responses
+# - Model
+# - Quick Model
 # =========================================================
 
 import streamlit as st
@@ -50,8 +55,11 @@ st.set_page_config(page_title="Wellbeing Dashboard", layout="wide")
 # Sheets Config
 # =========================
 SHEET_NAME = "Bipolar Dashboard"
+
 FORM_TAB = "Form Responses"
-SNAPSHOT_TAB = "Quick Form Responses"
+QUICK_FORM_TAB = "Quick Form Responses"
+MODEL_TAB = "Model"
+QUICK_MODEL_TAB = "Quick Model"
 
 
 # =========================
@@ -64,7 +72,10 @@ COLUMN_ALIASES = {
         "Certainty and belief in unusual ideas or things others don't believe",
     "Weekly Check-In  Flags":
         "Weekly Check-In Flags",
+    "Column 1": "Date",
 }
+
+RISK_VALUE_MAP = {"LOW": 0, "MED": 1, "HIGH": 2}
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -108,68 +119,47 @@ SIG_UP_COMING = "Signals and indicators [Feel like I'm going to experience an up
 SIG_DOWN_COMING = "Signals and indicators [Feel like I'm going to experience a down]"
 SIG_MIXED_COMING = "Signals and indicators [Feel like I'm going to experience a mixed]"
 
-MANIA_SIGNAL_COLUMNS = [
-    SIG_LESS_SLEEP,
-    SIG_MORE_ACTIVITY,
-    SIG_UP_NOW,
-    SIG_UP_COMING,
-]
-
-DEPRESSION_SIGNAL_COLUMNS = [
-    SIG_WITHDRAW,
-    SIG_AVOID_RESPONSIBILITIES,
-    SIG_DOWN_NOW,
-    SIG_DOWN_COMING,
-]
-
-PSYCHOSIS_SIGNAL_COLUMNS = [
-    SIG_HEARD_SAW,
-    SIG_WATCHED,
-    SIG_SPECIAL_MEANING,
-    SIG_TROUBLE_TRUSTING,
-]
-
-
-# =========================
-# Default Settings
-# =========================
-DEFAULT_DAILY_SETTINGS = {
-    "mania_energy_weight": 4.0,
-    "mania_speed_weight": 4.0,
-    "mania_impulsivity_weight": 4.0,
-    "mania_sleep_weight": 5.0,
-    "mania_signal_weight": 6.0,
-    "depression_mood_weight": 5.0,
-    "depression_energy_weight": 3.0,
-    "depression_motivation_weight": 4.0,
-    "depression_signal_weight": 6.0,
-    "psychosis_unusual_weight": 5.0,
-    "psychosis_suspicious_weight": 5.0,
-    "psychosis_certainty_weight": 4.0,
-    "psychosis_signal_weight": 6.0,
-    "mixed_mania_weight": 0.35,
-    "mixed_depression_weight": 0.35,
-    "mixed_psychosis_weight": 0.30,
-    "daily_medium_threshold": 40.0,
-    "daily_high_threshold": 70.0,
-    "daily_trend_threshold": 5.0,
+DAILY_FLAG_COLS = {
+    "Depression": "Depression Flags",
+    "Mania": "Mania Flags",
+    "Psychosis": "Psychosis Flags",
+    "Mixed": "Mixed Flags",
 }
 
-DEFAULT_SNAPSHOT_SETTINGS = {
-    "snapshot_medium_pct": 0.33,
-    "snapshot_high_pct": 0.66,
-    "snapshot_trend_threshold": 1.0,
+DAILY_SCORE_COLS = {
+    "Depression": "Depression Score",
+    "Mania": "Mania Score",
+    "Psychosis": "Psychosis Score",
+    "Mixed": "Mixed Score",
 }
 
+DAILY_AVG_COLS = {
+    "Depression": "3-Day Average (Depression)",
+    "Mania": "3-Day Average (Mania)",
+    "Psychosis": "3-Day Average (Psychosis)",
+    "Mixed": "3-Day Average (Mixed)",
+}
 
-# =========================
-# Session State Init
-# =========================
-if "daily_settings" not in st.session_state:
-    st.session_state["daily_settings"] = DEFAULT_DAILY_SETTINGS.copy()
+QUICK_SCORE_COLS = {
+    "Depression": "Depression Score",
+    "Mania": "Mania Score",
+    "Psychosis": "Psychosis Score",
+    "Mixed": "Mixed Score",
+}
 
-if "snapshot_settings" not in st.session_state:
-    st.session_state["snapshot_settings"] = DEFAULT_SNAPSHOT_SETTINGS.copy()
+QUICK_AVG_COLS = {
+    "Depression": "3-Response Average (Depression)",
+    "Mania": "3-Response Average (Mania)",
+    "Psychosis": "3-Response Average (Psychosis)",
+    "Mixed": "3-Response Average (Mixed)",
+}
+
+QUICK_DEV_COLS = {
+    "Depression": "Deviation From 3-Response Average (Depression)",
+    "Mania": "Deviation From 3-Response Average (Mania)",
+    "Psychosis": "Deviation From 3-Response Average (Psychosis)",
+    "Mixed": "Deviation From 3-Response Average (Mixed)",
+}
 
 
 # =========================
@@ -215,8 +205,9 @@ def load_sheet(tab_name: str) -> pd.DataFrame:
     df = df.loc[:, ~df.columns.duplicated()]
     df = normalize_columns(df)
 
-    if "Timestamp" in df.columns:
-        df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce", dayfirst=True)
+    for dt_col in ["Timestamp", "Date", "Date (int)"]:
+        if dt_col in df.columns:
+            df[dt_col] = pd.to_datetime(df[dt_col], errors="coerce", dayfirst=True)
 
     return df
 
@@ -231,14 +222,18 @@ def convert_numeric(df: pd.DataFrame) -> pd.DataFrame:
     working = df.copy()
 
     for col in working.columns:
-        if col in ["Timestamp", "Date"]:
+        if col in ["Timestamp", "Date", "Date (int)"]:
             continue
-
         converted = pd.to_numeric(working[col], errors="coerce")
         if converted.notna().any():
             working[col] = converted
 
     return working
+
+
+def bool_from_response(val):
+    text = str(val).strip().lower()
+    return text in ["yes", "true", "1", "y", "checked"]
 
 
 def score_response(val):
@@ -252,25 +247,27 @@ def score_response(val):
     return 0
 
 
-def bool_from_response(val):
-    text = str(val).strip().lower()
-    return text in ["yes", "true", "1", "y", "checked"]
+def prettify_signal_name(name: str) -> str:
+    return (
+        name.replace("Signals and indicators [", "")
+        .replace("Symptoms: [", "")
+        .replace("]", "")
+    )
 
 
-def safe_series(df: pd.DataFrame, col: str) -> pd.Series:
+def drop_blank_tail_rows(df: pd.DataFrame, required_cols: list[str]) -> pd.DataFrame:
+    if df.empty:
+        return df
+    present = [c for c in required_cols if c in df.columns]
+    if not present:
+        return df.dropna(how="all").copy()
+    return df.dropna(subset=present, how="all").copy()
+
+
+def safe_numeric_series(df: pd.DataFrame, col: str) -> pd.Series:
     if col in df.columns:
-        return pd.to_numeric(df[col], errors="coerce").fillna(0)
-    return pd.Series(0, index=df.index, dtype=float)
-
-
-def safe_signal_series(df: pd.DataFrame, col: str) -> pd.Series:
-    if col in df.columns:
-        return pd.to_numeric(df[col], errors="coerce").fillna(0)
-    return pd.Series(0, index=df.index, dtype=float)
-
-
-def clamp_0_100(series: pd.Series) -> pd.Series:
-    return series.clip(lower=0, upper=100)
+        return pd.to_numeric(df[col], errors="coerce")
+    return pd.Series([pd.NA] * len(df), index=df.index, dtype="float64")
 
 
 def status_color(level: str) -> str:
@@ -310,6 +307,52 @@ def confidence_from_count(count: int, trend: str, level: str) -> str:
     return "Low"
 
 
+def level_from_flag_count(flag_count, score=None) -> str:
+    try:
+        f = float(flag_count)
+    except Exception:
+        f = 0.0
+
+    if f >= 3:
+        return "High"
+    if f >= 1:
+        return "Medium"
+
+    if score is not None and pd.notna(score):
+        try:
+            s = float(score)
+            if s >= 0.66:
+                return "High"
+            if s >= 0.33:
+                return "Medium"
+        except Exception:
+            pass
+
+    return "Low"
+
+
+def level_from_normalized_score(score) -> str:
+    if pd.isna(score):
+        return "Low"
+    s = float(score)
+    if s >= 0.66:
+        return "High"
+    if s >= 0.33:
+        return "Medium"
+    return "Low"
+
+
+def trend_from_deviation(dev, threshold=0.08) -> str:
+    if pd.isna(dev):
+        return "Stable"
+    d = float(dev)
+    if d > threshold:
+        return "Rising"
+    if d < -threshold:
+        return "Falling"
+    return "Stable"
+
+
 def render_status_card(title: str, score: float, max_score: float, level: str, trend: str, confidence: str):
     color = status_color(level)
     conf_color = confidence_color(confidence)
@@ -326,7 +369,7 @@ def render_status_card(title: str, score: float, max_score: float, level: str, t
         ">
             <div style="font-size: 22px; font-weight: 700; margin-bottom: 6px;">{title}</div>
             <div style="font-size: 16px; margin-bottom: 6px;">
-                <strong>Current:</strong> {level} ({score:.0f}/{max_score:.0f})
+                <strong>Current:</strong> {level} ({score:.2f}/{max_score:.2f})
             </div>
             <div style="font-size: 16px; margin-bottom: 6px;">
                 <strong>Trend:</strong> {trend}
@@ -367,7 +410,7 @@ def render_daily_card(title: str, data: dict):
             margin-bottom: 12px;
         ">
             <div style="font-size: 22px; font-weight: 700; margin-bottom: 6px;">{title}</div>
-            <div style="font-size: 16px; margin-bottom: 6px;"><strong>Current state:</strong> {data['level']} ({data['score']:.0f}/100)</div>
+            <div style="font-size: 16px; margin-bottom: 6px;"><strong>Current state:</strong> {data['level']} ({data['score']:.2f})</div>
             <div style="font-size: 16px; margin-bottom: 6px;"><strong>Trend:</strong> {data['trend']}</div>
             <div style="font-size: 16px; margin-bottom: 8px;">
                 <strong>Confidence:</strong>
@@ -499,448 +542,214 @@ def render_filtered_chart(
 
 
 # =========================
-# Form Data (DATE-based)
+# Prep Functions
 # =========================
-def prepare_form(df: pd.DataFrame) -> pd.DataFrame:
+def prepare_form_raw(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df = convert_numeric(df.copy())
+    working = convert_numeric(df.copy())
+    working = drop_blank_tail_rows(working, ["Timestamp", COL_MOOD, COL_SLEEP_QUALITY, COL_ENERGY])
 
-    if "Timestamp" not in df.columns:
-        return df
+    if "Timestamp" in working.columns:
+        working["Timestamp"] = pd.to_datetime(working["Timestamp"], errors="coerce")
+        working["Date"] = working["Timestamp"].dt.date
 
-    df["Date"] = pd.to_datetime(df["Timestamp"], errors="coerce").dt.date
-
-    signal_columns = [c for c in df.columns if c.startswith("Signals and indicators [")]
-    for col in signal_columns:
-        df[col] = df[col].apply(bool_from_response).astype(int)
-
-    numeric_cols = [
-        c for c in df.select_dtypes(include="number").columns
-        if c != "Timestamp"
-    ]
-
-    if not numeric_cols:
-        return df
-
-    daily = (
-        df.groupby("Date", as_index=False)[numeric_cols]
-        .mean()
-        .sort_values("Date")
-        .reset_index(drop=True)
-    )
-
-    rolling_base_cols = [c for c in numeric_cols if c not in signal_columns]
-    rolling = (
-        daily[rolling_base_cols]
-        .rolling(window=3, min_periods=1)
-        .mean()
-        .add_suffix(" 3 Day Rolling Avg")
-    )
-
-    daily = pd.concat([daily[["Date"]], rolling], axis=1)
-    df = df.merge(daily, on="Date", how="left")
-
-    return df
+    return working.sort_values("Timestamp").reset_index(drop=True)
 
 
-# =========================
-# Snapshot Data (DATETIME-based)
-# =========================
-def prepare_snapshot(df: pd.DataFrame) -> pd.DataFrame:
+def prepare_quick_form_raw(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-
-    df = df.copy()
-
-    if "Timestamp" in df.columns:
-        df = df.sort_values("Timestamp").reset_index(drop=True)
-
-    symptom_columns = [c for c in df.columns if c != "Timestamp"]
-
-    for col in symptom_columns:
-        df[col] = df[col].apply(score_response)
-
-    numeric_cols = [
-        c for c in df.select_dtypes(include="number").columns
-        if c != "Timestamp"
-    ]
-
-    for col in numeric_cols:
-        df[f"{col} Trend"] = df[col].diff()
-
-    return df
-
-
-# =========================
-# Snapshot Model
-# =========================
-def snapshot_level(score: float, max_score: float, settings: dict) -> str:
-    if max_score <= 0:
-        return "Low"
-    pct = score / max_score
-    if pct >= settings["snapshot_high_pct"]:
-        return "High"
-    if pct >= settings["snapshot_medium_pct"]:
-        return "Medium"
-    return "Low"
-
-
-def snapshot_trend(series: pd.Series, settings: dict) -> str:
-    s = pd.to_numeric(series, errors="coerce").dropna()
-    if len(s) < 2:
-        return "Stable"
-
-    baseline = s.iloc[:-1]
-    if baseline.empty:
-        return "Stable"
-
-    diff = s.iloc[-1] - baseline.mean()
-
-    if diff > settings["snapshot_trend_threshold"]:
-        return "Rising"
-    if diff < -settings["snapshot_trend_threshold"]:
-        return "Falling"
-    return "Stable"
-
-
-def build_snapshot_model(df: pd.DataFrame, settings: dict):
-    if df.empty or "Timestamp" not in df.columns:
-        return None, pd.DataFrame()
 
     working = df.copy()
+    working = drop_blank_tail_rows(working, ["Timestamp"])
+    working["Timestamp"] = pd.to_datetime(working["Timestamp"], errors="coerce")
     working = working.sort_values("Timestamp").reset_index(drop=True)
 
-    depression_cols = [
-        "Symptoms: [Very low or depressed mood]",
-        "Symptoms: [Somewhat low or depressed mood]",
-        "Symptoms: [Social or emotional withdrawal]",
-        "Symptoms: [Feeling slowed down]",
-        "Symptoms: [Difficulty with self-care]",
-    ]
+    symptom_cols = [c for c in working.columns if c != "Timestamp"]
+    for col in symptom_cols:
+        numeric = working[col].apply(score_response)
+        working[f"{col} Numeric"] = numeric
+        working[f"{col} Trend"] = numeric.diff()
 
-    mania_cols = [
-        "Symptoms: [Very high or elevated mood]",
-        "Symptoms: [Somewhat high or elevated mood]",
-        "Symptoms: [Agitation or restlessness]",
-        "Symptoms: [Racing thoughts]",
-        "Symptoms: [Driven to activity]",
-    ]
+    return working
 
-    psychosis_cols = [
-        "Symptoms: [Hearing or seeing things that aren't there]",
-        "Symptoms: [Paranoia or suspicion]",
-        "Symptoms: [Firm belief in things others would not agree with]",
-    ]
 
-    all_model_cols = depression_cols + mania_cols + psychosis_cols
+def prepare_model(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
 
-    for col in all_model_cols:
-        if col not in working.columns:
-            working[col] = "No"
+    working = convert_numeric(df.copy())
+    working = drop_blank_tail_rows(
+        working,
+        ["Timestamp", "Date", "Depression Score", "Mania Score", "Psychosis Score", "Mixed Score"],
+    )
 
-    for col in all_model_cols:
-        working[col] = working[col].apply(score_response)
+    if "Timestamp" in working.columns:
+        working["Timestamp"] = pd.to_datetime(working["Timestamp"], errors="coerce")
 
-    working["Depression Score"] = working[depression_cols].sum(axis=1)
-    working["Mania Score"] = working[mania_cols].sum(axis=1)
-    working["Psychosis Score"] = working[psychosis_cols].sum(axis=1)
+    if "Date" in working.columns:
+        working["Date"] = pd.to_datetime(working["Date"], errors="coerce")
+    elif "Timestamp" in working.columns:
+        working["Date"] = pd.to_datetime(working["Timestamp"], errors="coerce").dt.floor("D")
 
-    working["Depression Level"] = working["Depression Score"].apply(lambda x: snapshot_level(x, 10, settings))
-    working["Mania Level"] = working["Mania Score"].apply(lambda x: snapshot_level(x, 10, settings))
-    working["Psychosis Level"] = working["Psychosis Score"].apply(lambda x: snapshot_level(x, 6, settings))
+    working = working.sort_values("Date").reset_index(drop=True)
+    working["DateLabel"] = pd.to_datetime(working["Date"]).dt.strftime("%Y-%m-%d")
 
-    last5 = working.tail(5).copy()
-    latest = last5.iloc[-1]
+    for name, score_col in DAILY_SCORE_COLS.items():
+        avg_col = DAILY_AVG_COLS[name]
+        if score_col in working.columns and avg_col in working.columns:
+            working[f"{name} Deviation"] = (
+                pd.to_numeric(working[score_col], errors="coerce")
+                - pd.to_numeric(working[avg_col], errors="coerce")
+            )
 
-    dep_trend = snapshot_trend(last5["Depression Score"], settings)
-    mania_trend = snapshot_trend(last5["Mania Score"], settings)
-    psych_trend = snapshot_trend(last5["Psychosis Score"], settings)
+    if "Overall Risk" in working.columns:
+        working["Overall Risk Numeric"] = (
+            working["Overall Risk"].astype(str).str.upper().map(RISK_VALUE_MAP).fillna(0)
+        )
 
-    dep_conf = confidence_from_count(len(last5), dep_trend, latest["Depression Level"])
-    mania_conf = confidence_from_count(len(last5), mania_trend, latest["Mania Level"])
-    psych_conf = confidence_from_count(len(last5), psych_trend, latest["Psychosis Level"])
+    return working
 
-    dep_level = latest["Depression Level"]
-    mania_level = latest["Mania Level"]
-    psych_level = latest["Psychosis Level"]
 
-    mixed_state = dep_level in ["Medium", "High"] and mania_level in ["Medium", "High"]
+def prepare_quick_model(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
 
-    if mixed_state:
-        if dep_trend == "Rising" and mania_trend == "Rising":
-            mixed_trend = "Rising"
-        elif dep_trend == "Falling" and mania_trend == "Falling":
-            mixed_trend = "Falling"
-        else:
-            mixed_trend = "Stable"
-    else:
-        mixed_trend = "Not Active"
+    working = convert_numeric(df.copy())
+    working = drop_blank_tail_rows(
+        working,
+        ["Timestamp", "Depression Score", "Mania Score", "Psychosis Score", "Mixed Score"],
+    )
 
-    summary = {
-        "Depression": {
-            "score": float(latest["Depression Score"]),
-            "max_score": 10.0,
-            "level": dep_level,
-            "trend": dep_trend,
-            "confidence": dep_conf,
-        },
-        "Mania": {
-            "score": float(latest["Mania Score"]),
-            "max_score": 10.0,
-            "level": mania_level,
-            "trend": mania_trend,
-            "confidence": mania_conf,
-        },
-        "Psychosis": {
-            "score": float(latest["Psychosis Score"]),
-            "max_score": 6.0,
-            "level": psych_level,
-            "trend": psych_trend,
-            "confidence": psych_conf,
-        },
-        "Mixed": {
-            "active": mixed_state,
-            "trend": mixed_trend,
-            "confidence": "Medium" if mixed_state else "Low",
-        },
-    }
+    if "Timestamp" in working.columns:
+        working["Timestamp"] = pd.to_datetime(working["Timestamp"], errors="coerce")
 
-    working["Depression Trend Value"] = working["Depression Score"].diff()
-    working["Mania Trend Value"] = working["Mania Score"].diff()
-    working["Psychosis Trend Value"] = working["Psychosis Score"].diff()
+    working = working.sort_values("Timestamp").reset_index(drop=True)
+    working["FilterDate"] = working["Timestamp"].dt.date
     working["TimeLabel"] = working["Timestamp"].dt.strftime("%Y-%m-%d %H:%M")
 
-    return summary, working
+    return working
 
 
 # =========================
-# Daily Model (DATE-based)
+# Summaries from Model Tabs
 # =========================
-def build_daily_model(form_df: pd.DataFrame, settings: dict) -> pd.DataFrame:
-    if form_df.empty or "Timestamp" not in form_df.columns:
-        return pd.DataFrame()
-
-    working = form_df.copy()
-    working = convert_numeric(working)
-    working["Date"] = pd.to_datetime(working["Timestamp"], errors="coerce").dt.date
-
-    signal_columns = [c for c in working.columns if c.startswith("Signals and indicators [")]
-    for col in signal_columns:
-        working[col] = working[col].apply(bool_from_response).astype(int)
-
-    score_columns = [
-        COL_MOOD,
-        COL_SLEEP_HOURS,
-        COL_SLEEP_QUALITY,
-        COL_ENERGY,
-        COL_MENTAL_SPEED,
-        COL_IMPULSIVITY,
-        COL_MOTIVATION,
-        COL_UNUSUAL,
-        COL_SUSPICIOUS,
-        COL_CERTAINTY,
-    ]
-    available_score_columns = [c for c in score_columns if c in working.columns]
-
-    daily_scores = (
-        working.groupby("Date", as_index=False)[available_score_columns].mean()
-        if available_score_columns else pd.DataFrame({"Date": working["Date"].dropna().unique()})
-    )
-
-    daily_signals = (
-        working.groupby("Date", as_index=False)[signal_columns].sum()
-        if signal_columns else pd.DataFrame({"Date": working["Date"].dropna().unique()})
-    )
-
-    daily = daily_scores.merge(daily_signals, on="Date", how="outer").sort_values("Date").reset_index(drop=True)
-
-    daily["Mania - Energy"] = safe_series(daily, COL_ENERGY) * settings["mania_energy_weight"]
-    daily["Mania - Mental speed"] = safe_series(daily, COL_MENTAL_SPEED) * settings["mania_speed_weight"]
-    daily["Mania - Impulsivity"] = safe_series(daily, COL_IMPULSIVITY) * settings["mania_impulsivity_weight"]
-    daily["Mania - Less sleep"] = (10 - safe_series(daily, COL_SLEEP_HOURS)).clip(lower=0) * settings["mania_sleep_weight"]
-    daily["Mania - Up signals"] = (
-        safe_signal_series(daily, SIG_LESS_SLEEP)
-        + safe_signal_series(daily, SIG_MORE_ACTIVITY)
-        + safe_signal_series(daily, SIG_UP_NOW)
-        + safe_signal_series(daily, SIG_UP_COMING)
-    ) * settings["mania_signal_weight"]
-
-    daily["Mania Score"] = clamp_0_100(
-        daily["Mania - Energy"]
-        + daily["Mania - Mental speed"]
-        + daily["Mania - Impulsivity"]
-        + daily["Mania - Less sleep"]
-        + daily["Mania - Up signals"]
-    )
-
-    daily["Depression - Low mood"] = (10 - safe_series(daily, COL_MOOD)).clip(lower=0) * settings["depression_mood_weight"]
-    daily["Depression - Low energy"] = (10 - safe_series(daily, COL_ENERGY)).clip(lower=0) * settings["depression_energy_weight"]
-    daily["Depression - Low motivation"] = (10 - safe_series(daily, COL_MOTIVATION)).clip(lower=0) * settings["depression_motivation_weight"]
-    daily["Depression - Withdrawal"] = (
-        safe_signal_series(daily, SIG_WITHDRAW)
-        + safe_signal_series(daily, SIG_AVOID_RESPONSIBILITIES)
-        + safe_signal_series(daily, SIG_DOWN_NOW)
-        + safe_signal_series(daily, SIG_DOWN_COMING)
-    ) * settings["depression_signal_weight"]
-
-    daily["Depression Score"] = clamp_0_100(
-        daily["Depression - Low mood"]
-        + daily["Depression - Low energy"]
-        + daily["Depression - Low motivation"]
-        + daily["Depression - Withdrawal"]
-    )
-
-    daily["Psychosis - Unusual perceptions"] = safe_series(daily, COL_UNUSUAL) * settings["psychosis_unusual_weight"]
-    daily["Psychosis - Suspiciousness"] = safe_series(daily, COL_SUSPICIOUS) * settings["psychosis_suspicious_weight"]
-    daily["Psychosis - Certainty"] = safe_series(daily, COL_CERTAINTY) * settings["psychosis_certainty_weight"]
-    daily["Psychosis - Signals"] = (
-        safe_signal_series(daily, SIG_HEARD_SAW)
-        + safe_signal_series(daily, SIG_WATCHED)
-        + safe_signal_series(daily, SIG_SPECIAL_MEANING)
-        + safe_signal_series(daily, SIG_TROUBLE_TRUSTING)
-    ) * settings["psychosis_signal_weight"]
-
-    daily["Psychosis Score"] = clamp_0_100(
-        daily["Psychosis - Unusual perceptions"]
-        + daily["Psychosis - Suspiciousness"]
-        + daily["Psychosis - Certainty"]
-        + daily["Psychosis - Signals"]
-    )
-
-    mixed_weight_total = (
-        settings["mixed_mania_weight"]
-        + settings["mixed_depression_weight"]
-        + settings["mixed_psychosis_weight"]
-    )
-    if mixed_weight_total == 0:
-        mixed_weight_total = 1.0
-
-    daily["Mixed - Mania"] = daily["Mania Score"] * settings["mixed_mania_weight"]
-    daily["Mixed - Depression"] = daily["Depression Score"] * settings["mixed_depression_weight"]
-    daily["Mixed - Psychosis"] = daily["Psychosis Score"] * settings["mixed_psychosis_weight"]
-    daily["Mixed Score"] = clamp_0_100(
-        (daily["Mixed - Mania"] + daily["Mixed - Depression"] + daily["Mixed - Psychosis"]) / mixed_weight_total
-    )
-
-    if signal_columns:
-        daily["Total Signals"] = daily[signal_columns].sum(axis=1)
-    else:
-        daily["Total Signals"] = 0
-
-    mania_available = [c for c in MANIA_SIGNAL_COLUMNS if c in daily.columns]
-    depression_available = [c for c in DEPRESSION_SIGNAL_COLUMNS if c in daily.columns]
-    psychosis_available = [c for c in PSYCHOSIS_SIGNAL_COLUMNS if c in daily.columns]
-
-    daily["Mania Signals"] = daily[mania_available].sum(axis=1) if mania_available else 0
-    daily["Depression Signals"] = daily[depression_available].sum(axis=1) if depression_available else 0
-    daily["Psychosis Signals"] = daily[psychosis_available].sum(axis=1) if psychosis_available else 0
-
-    daily["DateLabel"] = pd.to_datetime(daily["Date"]).dt.strftime("%Y-%m-%d")
-
-    return daily
-
-
-def build_daily_summary_cards(daily_df: pd.DataFrame, settings: dict):
-    if daily_df.empty:
+def build_daily_summary_from_model(model_df: pd.DataFrame):
+    if model_df.empty:
         return None
 
-    df = daily_df.copy()
-    last5 = df.tail(5)
-    latest = last5.iloc[-1]
+    latest = model_df.iloc[-1]
 
-    def daily_level(score):
-        if score >= settings["daily_high_threshold"]:
-            return "High"
-        if score >= settings["daily_medium_threshold"]:
-            return "Medium"
-        return "Low"
-
-    def daily_trend(series):
-        s = pd.to_numeric(series, errors="coerce").dropna()
-        if len(s) < 2:
-            return "Stable"
-        diff = s.iloc[-1] - s.iloc[:-1].mean()
-        if diff > settings["daily_trend_threshold"]:
-            return "Rising"
-        if diff < -settings["daily_trend_threshold"]:
-            return "Falling"
-        return "Stable"
-
-    def top_reasons(row, cols, prefix_to_remove):
-        pairs = [(c, float(row.get(c, 0) or 0)) for c in cols if c in row.index]
+    def top_reasons(row, candidates):
+        pairs = []
+        for c in candidates:
+            if c in row.index and pd.notna(row[c]):
+                pairs.append((c, float(row[c])))
         pairs = sorted(pairs, key=lambda x: x[1], reverse=True)
         cleaned = []
         for c, v in pairs:
             if v > 0:
-                cleaned.append(c.replace(prefix_to_remove, ""))
+                cleaned.append(c)
         return cleaned[:3]
 
-    mania_level = daily_level(float(latest["Mania Score"]))
-    depression_level = daily_level(float(latest["Depression Score"]))
-    psychosis_level = daily_level(float(latest["Psychosis Score"]))
-
-    return {
-        "Depression": {
-            "score": float(latest["Depression Score"]),
-            "level": depression_level,
-            "trend": daily_trend(last5["Depression Score"]),
-            "confidence": confidence_from_count(len(last5), daily_trend(last5["Depression Score"]), depression_level),
-            "reasons": top_reasons(
-                latest,
-                [
-                    "Depression - Low mood",
-                    "Depression - Low energy",
-                    "Depression - Low motivation",
-                    "Depression - Withdrawal",
-                ],
-                "Depression - ",
-            ),
-        },
-        "Mania": {
-            "score": float(latest["Mania Score"]),
-            "level": mania_level,
-            "trend": daily_trend(last5["Mania Score"]),
-            "confidence": confidence_from_count(len(last5), daily_trend(last5["Mania Score"]), mania_level),
-            "reasons": top_reasons(
-                latest,
-                [
-                    "Mania - Energy",
-                    "Mania - Mental speed",
-                    "Mania - Impulsivity",
-                    "Mania - Less sleep",
-                    "Mania - Up signals",
-                ],
-                "Mania - ",
-            ),
-        },
-        "Psychosis": {
-            "score": float(latest["Psychosis Score"]),
-            "level": psychosis_level,
-            "trend": daily_trend(last5["Psychosis Score"]),
-            "confidence": confidence_from_count(len(last5), daily_trend(last5["Psychosis Score"]), psychosis_level),
-            "reasons": top_reasons(
-                latest,
-                [
-                    "Psychosis - Unusual perceptions",
-                    "Psychosis - Suspiciousness",
-                    "Psychosis - Certainty",
-                    "Psychosis - Signals",
-                ],
-                "Psychosis - ",
-            ),
-        },
+    score_reason_map = {
+        "Depression": [
+            "Low Mood Score",
+            "Low Sleep Quality",
+            "Low Energy",
+            "Low Mental Speed",
+            "Low Motivation",
+        ],
+        "Mania": [
+            "High Mood Score",
+            "High Sleep Quality",
+            "High Energy",
+            "High Mental Speed",
+            "High Motivation",
+        ],
+        "Psychosis": [
+            "Unusual perceptions",
+            "Suspiciousness",
+            "Certainty and belief in unusual ideas or things others don't believe",
+            "Psychosis Flags",
+        ],
     }
+
+    summary = {}
+
+    for name in ["Depression", "Mania", "Psychosis"]:
+        score_col = DAILY_SCORE_COLS[name]
+        flag_col = DAILY_FLAG_COLS[name]
+        dev_col = f"{name} Deviation"
+
+        score = float(latest[score_col]) if score_col in latest.index and pd.notna(latest[score_col]) else 0.0
+        flags = float(latest[flag_col]) if flag_col in latest.index and pd.notna(latest[flag_col]) else 0.0
+        deviation = float(latest[dev_col]) if dev_col in latest.index and pd.notna(latest[dev_col]) else 0.0
+
+        level = level_from_flag_count(flags, score)
+        trend = trend_from_deviation(deviation, threshold=0.08)
+        confidence = confidence_from_count(len(model_df.tail(5)), trend, level)
+        reasons = top_reasons(latest, score_reason_map[name])
+
+        summary[name] = {
+            "score": score,
+            "level": level,
+            "trend": trend,
+            "confidence": confidence,
+            "reasons": reasons,
+        }
+
+    return summary
+
+
+def build_quick_summary_from_model(quick_model_df: pd.DataFrame):
+    if quick_model_df.empty:
+        return None, pd.DataFrame()
+
+    latest = quick_model_df.iloc[-1]
+    last5 = quick_model_df.tail(5).copy()
+
+    summary = {}
+
+    for name in ["Depression", "Mania", "Psychosis"]:
+        score_col = QUICK_SCORE_COLS[name]
+        dev_col = QUICK_DEV_COLS[name]
+
+        score = float(latest[score_col]) if score_col in latest.index and pd.notna(latest[score_col]) else 0.0
+        dev = float(latest[dev_col]) if dev_col in latest.index and pd.notna(latest[dev_col]) else 0.0
+
+        level = level_from_normalized_score(score)
+        trend = trend_from_deviation(dev, threshold=0.10)
+        confidence = confidence_from_count(len(last5), trend, level)
+
+        summary[name] = {
+            "score": score,
+            "max_score": 1.0,
+            "level": level,
+            "trend": trend,
+            "confidence": confidence,
+        }
+
+    mixed_score = float(latest["Mixed Score"]) if "Mixed Score" in latest.index and pd.notna(latest["Mixed Score"]) else 0.0
+    mixed_dev = float(latest["Deviation From 3-Response Average (Mixed)"]) if "Deviation From 3-Response Average (Mixed)" in latest.index and pd.notna(latest["Deviation From 3-Response Average (Mixed)"]) else 0.0
+    mixed_active = mixed_score >= 0.33 or (
+        summary["Depression"]["level"] in ["Medium", "High"] and summary["Mania"]["level"] in ["Medium", "High"]
+    )
+
+    summary["Mixed"] = {
+        "active": mixed_active,
+        "trend": trend_from_deviation(mixed_dev, threshold=0.10) if mixed_active else "Not Active",
+        "confidence": "Medium" if mixed_active else "Low",
+    }
+
+    return summary, quick_model_df
 
 
 # =========================
 # Warning Helpers
 # =========================
-def prettify_signal_name(name: str) -> str:
-    return name.replace("Signals and indicators [", "").replace("]", "")
-
-
 def get_latest_form_warning_items(form_df: pd.DataFrame) -> tuple[list[str], list[str]]:
     if form_df.empty or "Timestamp" not in form_df.columns:
         return [], []
@@ -971,6 +780,8 @@ def get_latest_form_warning_items(form_df: pd.DataFrame) -> tuple[list[str], lis
     ]:
         if col in latest.index and pd.notna(latest[col]):
             val = pd.to_numeric(latest[col], errors="coerce")
+            if pd.isna(val):
+                continue
             if col in [COL_MOOD, COL_MOTIVATION] and val <= 4:
                 concerning.append(f"{label} ({val:.1f})")
             elif col == COL_SLEEP_HOURS and val <= 5:
@@ -983,22 +794,22 @@ def get_latest_form_warning_items(form_df: pd.DataFrame) -> tuple[list[str], lis
     return flagged, concerning
 
 
-def get_latest_snapshot_warning_items(snapshot_raw_df: pd.DataFrame) -> tuple[list[str], list[str]]:
-    if snapshot_raw_df.empty or "Timestamp" not in snapshot_raw_df.columns:
+def get_latest_quick_form_warning_items(quick_form_df: pd.DataFrame) -> tuple[list[str], list[str]]:
+    if quick_form_df.empty or "Timestamp" not in quick_form_df.columns:
         return [], []
 
-    working = snapshot_raw_df.copy().sort_values("Timestamp").reset_index(drop=True)
+    working = quick_form_df.copy().sort_values("Timestamp").reset_index(drop=True)
     latest = working.iloc[-1]
 
     signals = []
     concerning = []
 
     for col in working.columns:
-        if col == "Timestamp":
+        if col == "Timestamp" or col.endswith(" Numeric") or col.endswith(" Trend"):
             continue
 
         val = str(latest.get(col, "")).strip().lower()
-        label = col.replace("Symptoms: [", "").replace("]", "")
+        label = prettify_signal_name(col)
 
         if val == "yes":
             signals.append(f"{label} — Yes")
@@ -1018,37 +829,47 @@ def get_latest_snapshot_warning_items(snapshot_raw_df: pd.DataFrame) -> tuple[li
 
 def get_model_concerning_findings(
     daily_summary: dict | None,
-    snapshot_summary: dict | None,
+    quick_summary: dict | None,
+    model_df: pd.DataFrame,
+    quick_model_df: pd.DataFrame,
 ) -> tuple[list[str], list[str]]:
     daily_findings = []
-    snapshot_findings = []
+    quick_findings = []
 
-    if daily_summary:
+    if daily_summary and not model_df.empty:
+        latest = model_df.iloc[-1]
+
         for name in ["Depression", "Mania", "Psychosis"]:
             item = daily_summary[name]
             if item["level"] in ["Medium", "High"]:
                 daily_findings.append(
                     f"Daily {name.lower()} is {item['level'].lower()} and {item['trend'].lower()}"
                 )
-            if item["reasons"]:
+
+        if "Concerning Situation Flags" in latest.index and pd.notna(latest["Concerning Situation Flags"]):
+            if float(latest["Concerning Situation Flags"]) > 0:
                 daily_findings.append(
-                    f"Daily {name.lower()} is being driven by: {', '.join(item['reasons'])}"
+                    f"Concerning situation flags: {int(float(latest['Concerning Situation Flags']))}"
                 )
 
-    if snapshot_summary:
+        for col in ["Mania Warning", "Psychosis Warning", "Overall Risk"]:
+            if col in latest.index and pd.notna(latest[col]) and str(latest[col]).strip():
+                daily_findings.append(f"{col}: {latest[col]}")
+
+    if quick_summary and not quick_model_df.empty:
         for name in ["Depression", "Mania", "Psychosis"]:
-            item = snapshot_summary[name]
+            item = quick_summary[name]
             if item["level"] in ["Medium", "High"]:
-                snapshot_findings.append(
+                quick_findings.append(
                     f"Snapshot {name.lower()} is {item['level'].lower()} and {item['trend'].lower()}"
                 )
 
-        if snapshot_summary["Mixed"]["active"]:
-            snapshot_findings.append(
-                f"Snapshot mixed state is active and {snapshot_summary['Mixed']['trend'].lower()}"
+        if quick_summary["Mixed"]["active"]:
+            quick_findings.append(
+                f"Snapshot mixed state is active and {quick_summary['Mixed']['trend'].lower()}"
             )
 
-    return daily_findings, snapshot_findings
+    return daily_findings, quick_findings
 
 
 # =========================
@@ -1065,25 +886,25 @@ except Exception as e:
     st.stop()
 
 form_df = load_sheet(FORM_TAB)
-snapshot_df_raw = load_sheet(SNAPSHOT_TAB)
+quick_form_df = load_sheet(QUICK_FORM_TAB)
+model_df = load_sheet(MODEL_TAB)
+quick_model_df = load_sheet(QUICK_MODEL_TAB)
 
-form_data = prepare_form(form_df)
-snapshot_data = prepare_snapshot(snapshot_df_raw)
-snapshot_model_summary, snapshot_model_data = build_snapshot_model(
-    snapshot_df_raw,
-    st.session_state["snapshot_settings"],
-)
-daily_model_data = build_daily_model(form_df, st.session_state["daily_settings"])
-daily_model_summary = build_daily_summary_cards(
-    daily_model_data,
-    st.session_state["daily_settings"],
-)
+form_data = prepare_form_raw(form_df)
+quick_form_data = prepare_quick_form_raw(quick_form_df)
+model_data = prepare_model(model_df)
+quick_model_data = prepare_quick_model(quick_model_df)
 
-latest_form_signals, latest_form_findings = get_latest_form_warning_items(form_df)
-latest_snapshot_signals, latest_snapshot_findings = get_latest_snapshot_warning_items(snapshot_df_raw)
+daily_model_summary = build_daily_summary_from_model(model_data)
+snapshot_model_summary, snapshot_model_data = build_quick_summary_from_model(quick_model_data)
+
+latest_form_signals, latest_form_findings = get_latest_form_warning_items(form_data)
+latest_snapshot_signals, latest_snapshot_findings = get_latest_quick_form_warning_items(quick_form_data)
 daily_model_findings, snapshot_model_findings = get_model_concerning_findings(
     daily_model_summary,
     snapshot_model_summary,
+    model_data,
+    snapshot_model_data,
 )
 
 
@@ -1105,28 +926,8 @@ tab_dashboard, tab_warnings, tab_daily_model, tab_snapshot_model, tab_form_data,
 # =========================
 with tab_dashboard:
     st.subheader("Dashboard")
+    st.caption("This dashboard reads directly from Form Responses, Quick Form Responses, Model, and Quick Model.")
 
-    # Refresh summaries using current settings
-    daily_model_data = build_daily_model(form_df, st.session_state["daily_settings"])
-    daily_model_summary = build_daily_summary_cards(
-        daily_model_data,
-        st.session_state["daily_settings"],
-    )
-    snapshot_model_summary, snapshot_model_data = build_snapshot_model(
-        snapshot_df_raw,
-        st.session_state["snapshot_settings"],
-    )
-
-    latest_form_signals, latest_form_findings = get_latest_form_warning_items(form_df)
-    latest_snapshot_signals, latest_snapshot_findings = get_latest_snapshot_warning_items(snapshot_df_raw)
-    daily_model_findings, snapshot_model_findings = get_model_concerning_findings(
-        daily_model_summary,
-        snapshot_model_summary,
-    )
-
-    # =========================
-    # Current State
-    # =========================
     st.markdown("### Current state")
 
     left, right = st.columns(2)
@@ -1186,34 +987,28 @@ with tab_dashboard:
         else:
             st.info("No snapshot model summary available.")
 
-    # =========================
-    # Key Warnings
-    # =========================
     st.markdown("### Key warnings")
 
     warn_left, warn_right = st.columns(2)
 
     with warn_left:
         render_signal_box(
-            "Daily questionnaire",
+            "Daily questionnaire / model",
             latest_form_findings + daily_model_findings + latest_form_signals,
             tone="error" if (latest_form_findings or daily_model_findings) else "warning",
         )
 
     with warn_right:
         render_signal_box(
-            "Snapshot questionnaire",
+            "Snapshot questionnaire / model",
             latest_snapshot_findings + snapshot_model_findings + latest_snapshot_signals,
             tone="error" if (latest_snapshot_findings or snapshot_model_findings) else "warning",
         )
 
-    # =========================
-    # Recent Trends
-    # =========================
     st.markdown("### Recent trends")
 
-    if not daily_model_data.empty:
-        trend_df = daily_model_data.copy()
+    if not model_data.empty:
+        trend_df = model_data.copy()
 
         min_date = pd.to_datetime(trend_df["Date"]).min().date()
         max_date = pd.to_datetime(trend_df["Date"]).max().date()
@@ -1247,56 +1042,39 @@ with tab_dashboard:
         ]
 
         st.line_chart(
-            trend_df[["DateLabel"] + trend_cols].set_index("DateLabel")
+            trend_df[["DateLabel"] + [c for c in trend_cols if c in trend_df.columns]].set_index("DateLabel")
         )
     else:
         st.info("No daily trend data available.")
 
-    # =========================
-    # Signals Overview
-    # =========================
-    st.markdown("### Signals overview")
+    st.markdown("### Flags overview")
 
-    if not daily_model_data.empty:
-        latest_daily = daily_model_data.iloc[-1]
+    if not model_data.empty:
+        latest_daily = model_data.iloc[-1]
 
         m1, m2, m3, m4 = st.columns(4)
         with m1:
-            st.metric("Total signals", int(latest_daily.get("Total Signals", 0)))
+            st.metric("Concerning flags", int(float(latest_daily.get("Concerning Situation Flags", 0) or 0)))
         with m2:
-            st.metric("Depression signals", int(latest_daily.get("Depression Signals", 0)))
+            st.metric("Depression flags", int(float(latest_daily.get("Depression Flags", 0) or 0)))
         with m3:
-            st.metric("Mania signals", int(latest_daily.get("Mania Signals", 0)))
+            st.metric("Mania flags", int(float(latest_daily.get("Mania Flags", 0) or 0)))
         with m4:
-            st.metric("Psychosis signals", int(latest_daily.get("Psychosis Signals", 0)))
+            st.metric("Psychosis flags", int(float(latest_daily.get("Psychosis Flags", 0) or 0)))
     else:
-        st.info("No signal overview available.")
+        st.info("No flag overview available.")
 
-    # =========================
-    # Recent Activity
-    # =========================
     st.markdown("### Recent activity")
 
     a1, a2, a3, a4 = st.columns(4)
 
-    latest_form_time = None
-    latest_snapshot_time = None
-
-    if not form_df.empty and "Timestamp" in form_df.columns:
-        form_ts = pd.to_datetime(form_df["Timestamp"], errors="coerce").dropna()
-        if not form_ts.empty:
-            latest_form_time = form_ts.max()
-
-    if not snapshot_df_raw.empty and "Timestamp" in snapshot_df_raw.columns:
-        snap_ts = pd.to_datetime(snapshot_df_raw["Timestamp"], errors="coerce").dropna()
-        if not snap_ts.empty:
-            latest_snapshot_time = snap_ts.max()
-
-    days_tracked = len(daily_model_data) if not daily_model_data.empty else 0
+    latest_form_time = form_data["Timestamp"].max() if not form_data.empty and "Timestamp" in form_data.columns else None
+    latest_snapshot_time = quick_form_data["Timestamp"].max() if not quick_form_data.empty and "Timestamp" in quick_form_data.columns else None
+    days_tracked = len(model_data) if not model_data.empty else 0
 
     snapshot_last_7 = 0
-    if latest_snapshot_time is not None and not snapshot_df_raw.empty and "Timestamp" in snapshot_df_raw.columns:
-        snap_ts = pd.to_datetime(snapshot_df_raw["Timestamp"], errors="coerce").dropna()
+    if latest_snapshot_time is not None and not quick_form_data.empty and "Timestamp" in quick_form_data.columns:
+        snap_ts = pd.to_datetime(quick_form_data["Timestamp"], errors="coerce").dropna()
         snapshot_last_7 = int((snap_ts >= (latest_snapshot_time - pd.Timedelta(days=7))).sum())
 
     with a1:
@@ -1310,7 +1088,7 @@ with tab_dashboard:
             latest_snapshot_time.strftime("%Y-%m-%d %H:%M") if latest_snapshot_time is not None else "N/A"
         )
     with a3:
-        st.metric("Days tracked", days_tracked)
+        st.metric("Days tracked (Model)", days_tracked)
     with a4:
         st.metric("Snapshot entries (last 7d)", snapshot_last_7)
 
@@ -1404,175 +1182,9 @@ with tab_warnings:
 # =========================
 with tab_daily_model:
     st.subheader("Daily Model")
+    st.caption("Drawn directly from the Model sheet.")
 
-    with st.expander("Daily Model settings"):
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.session_state["daily_settings"]["mania_energy_weight"] = st.number_input(
-                "Mania: energy weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["mania_energy_weight"]),
-                step=0.5,
-                key="daily_mania_energy_weight",
-            )
-            st.session_state["daily_settings"]["mania_speed_weight"] = st.number_input(
-                "Mania: mental speed weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["mania_speed_weight"]),
-                step=0.5,
-                key="daily_mania_speed_weight",
-            )
-            st.session_state["daily_settings"]["mania_impulsivity_weight"] = st.number_input(
-                "Mania: impulsivity weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["mania_impulsivity_weight"]),
-                step=0.5,
-                key="daily_mania_impulsivity_weight",
-            )
-            st.session_state["daily_settings"]["mania_sleep_weight"] = st.number_input(
-                "Mania: low sleep weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["mania_sleep_weight"]),
-                step=0.5,
-                key="daily_mania_sleep_weight",
-            )
-            st.session_state["daily_settings"]["mania_signal_weight"] = st.number_input(
-                "Mania: signal weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["mania_signal_weight"]),
-                step=0.5,
-                key="daily_mania_signal_weight",
-            )
-
-        with col2:
-            st.session_state["daily_settings"]["depression_mood_weight"] = st.number_input(
-                "Depression: low mood weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["depression_mood_weight"]),
-                step=0.5,
-                key="daily_depression_mood_weight",
-            )
-            st.session_state["daily_settings"]["depression_energy_weight"] = st.number_input(
-                "Depression: low energy weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["depression_energy_weight"]),
-                step=0.5,
-                key="daily_depression_energy_weight",
-            )
-            st.session_state["daily_settings"]["depression_motivation_weight"] = st.number_input(
-                "Depression: low motivation weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["depression_motivation_weight"]),
-                step=0.5,
-                key="daily_depression_motivation_weight",
-            )
-            st.session_state["daily_settings"]["depression_signal_weight"] = st.number_input(
-                "Depression: signal weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["depression_signal_weight"]),
-                step=0.5,
-                key="daily_depression_signal_weight",
-            )
-            st.session_state["daily_settings"]["psychosis_unusual_weight"] = st.number_input(
-                "Psychosis: unusual perceptions weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["psychosis_unusual_weight"]),
-                step=0.5,
-                key="daily_psychosis_unusual_weight",
-            )
-            st.session_state["daily_settings"]["psychosis_suspicious_weight"] = st.number_input(
-                "Psychosis: suspiciousness weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["psychosis_suspicious_weight"]),
-                step=0.5,
-                key="daily_psychosis_suspicious_weight",
-            )
-
-        with col3:
-            st.session_state["daily_settings"]["psychosis_certainty_weight"] = st.number_input(
-                "Psychosis: certainty weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["psychosis_certainty_weight"]),
-                step=0.5,
-                key="daily_psychosis_certainty_weight",
-            )
-            st.session_state["daily_settings"]["psychosis_signal_weight"] = st.number_input(
-                "Psychosis: signal weight",
-                min_value=0.0,
-                max_value=20.0,
-                value=float(st.session_state["daily_settings"]["psychosis_signal_weight"]),
-                step=0.5,
-                key="daily_psychosis_signal_weight",
-            )
-            st.session_state["daily_settings"]["mixed_mania_weight"] = st.number_input(
-                "Mixed: mania component weight",
-                min_value=0.0,
-                max_value=2.0,
-                value=float(st.session_state["daily_settings"]["mixed_mania_weight"]),
-                step=0.05,
-                key="daily_mixed_mania_weight",
-            )
-            st.session_state["daily_settings"]["mixed_depression_weight"] = st.number_input(
-                "Mixed: depression component weight",
-                min_value=0.0,
-                max_value=2.0,
-                value=float(st.session_state["daily_settings"]["mixed_depression_weight"]),
-                step=0.05,
-                key="daily_mixed_depression_weight",
-            )
-            st.session_state["daily_settings"]["mixed_psychosis_weight"] = st.number_input(
-                "Mixed: psychosis component weight",
-                min_value=0.0,
-                max_value=2.0,
-                value=float(st.session_state["daily_settings"]["mixed_psychosis_weight"]),
-                step=0.05,
-                key="daily_mixed_psychosis_weight",
-            )
-            st.session_state["daily_settings"]["daily_medium_threshold"] = st.number_input(
-                "Card threshold: medium",
-                min_value=0.0,
-                max_value=100.0,
-                value=float(st.session_state["daily_settings"]["daily_medium_threshold"]),
-                step=1.0,
-                key="daily_medium_threshold",
-            )
-            st.session_state["daily_settings"]["daily_high_threshold"] = st.number_input(
-                "Card threshold: high",
-                min_value=0.0,
-                max_value=100.0,
-                value=float(st.session_state["daily_settings"]["daily_high_threshold"]),
-                step=1.0,
-                key="daily_high_threshold",
-            )
-            st.session_state["daily_settings"]["daily_trend_threshold"] = st.number_input(
-                "Trend threshold",
-                min_value=0.0,
-                max_value=50.0,
-                value=float(st.session_state["daily_settings"]["daily_trend_threshold"]),
-                step=1.0,
-                key="daily_trend_threshold",
-            )
-
-    daily_model_data = build_daily_model(form_df, st.session_state["daily_settings"])
-    daily_model_summary = build_daily_summary_cards(
-        daily_model_data,
-        st.session_state["daily_settings"],
-    )
-
-    if daily_model_data.empty:
+    if model_data.empty:
         st.info("No daily model data available.")
     else:
         if daily_model_summary:
@@ -1581,15 +1193,13 @@ with tab_daily_model:
 
             with c1:
                 render_daily_card("Depression", daily_model_summary["Depression"])
-
             with c2:
                 render_daily_card("Mania", daily_model_summary["Mania"])
-
             with c3:
                 render_daily_card("Psychosis", daily_model_summary["Psychosis"])
 
         render_filtered_chart(
-            daily_model_data,
+            model_data,
             date_col="Date",
             label_col="DateLabel",
             title="Daily state scores",
@@ -1599,118 +1209,84 @@ with tab_daily_model:
         )
 
         render_filtered_chart(
-            daily_model_data,
+            model_data,
             date_col="Date",
             label_col="DateLabel",
-            title="Mania contributions",
+            title="Daily moving averages",
             default_cols=[
-                "Mania - Energy",
-                "Mania - Mental speed",
-                "Mania - Impulsivity",
-                "Mania - Less sleep",
-                "Mania - Up signals",
+                "3-Day Average (Depression)",
+                "3-Day Average (Mania)",
+                "3-Day Average (Psychosis)",
+                "3-Day Average (Mixed)",
             ],
-            key_prefix="daily_mania_contrib",
+            key_prefix="daily_3day_avg",
             chart_type="line",
         )
 
         render_filtered_chart(
-            daily_model_data,
+            model_data,
             date_col="Date",
             label_col="DateLabel",
-            title="Depression contributions",
+            title="Deviation from 3-day averages",
             default_cols=[
-                "Depression - Low mood",
-                "Depression - Low energy",
-                "Depression - Low motivation",
-                "Depression - Withdrawal",
+                "Depression Deviation",
+                "Mania Deviation",
+                "Psychosis Deviation",
+                "Mixed Deviation",
             ],
-            key_prefix="daily_depression_contrib",
+            key_prefix="daily_deviation",
             chart_type="line",
         )
 
         render_filtered_chart(
-            daily_model_data,
+            model_data,
             date_col="Date",
             label_col="DateLabel",
-            title="Psychosis contributions",
+            title="Daily flags",
             default_cols=[
-                "Psychosis - Unusual perceptions",
-                "Psychosis - Suspiciousness",
-                "Psychosis - Certainty",
-                "Psychosis - Signals",
+                "Concerning Situation Flags",
+                "Mania Flags",
+                "Depression Flags",
+                "Mixed Flags",
+                "Psychosis Flags",
             ],
-            key_prefix="daily_psychosis_contrib",
-            chart_type="line",
-        )
-
-        render_filtered_chart(
-            daily_model_data,
-            date_col="Date",
-            label_col="DateLabel",
-            title="Mixed contributions",
-            default_cols=[
-                "Mixed - Mania",
-                "Mixed - Depression",
-                "Mixed - Psychosis",
-            ],
-            key_prefix="daily_mixed_contrib",
-            chart_type="line",
-        )
-
-        render_filtered_chart(
-            daily_model_data,
-            date_col="Date",
-            label_col="DateLabel",
-            title="Everything",
-            default_cols=[
-                "Depression Score",
-                "Mania Score",
-                "Psychosis Score",
-                "Mixed Score",
-                "Mania - Energy",
-                "Mania - Mental speed",
-                "Mania - Impulsivity",
-                "Mania - Less sleep",
-                "Mania - Up signals",
-                "Depression - Low mood",
-                "Depression - Low energy",
-                "Depression - Low motivation",
-                "Depression - Withdrawal",
-                "Psychosis - Unusual perceptions",
-                "Psychosis - Suspiciousness",
-                "Psychosis - Certainty",
-                "Psychosis - Signals",
-                "Mixed - Mania",
-                "Mixed - Depression",
-                "Mixed - Psychosis",
-            ],
-            key_prefix="daily_everything",
-            chart_type="line",
-        )
-
-        render_filtered_chart(
-            daily_model_data,
-            date_col="Date",
-            label_col="DateLabel",
-            title="Signals and indicators",
-            default_cols=["Total Signals"],
-            key_prefix="daily_signal_total",
+            key_prefix="daily_flags",
             chart_type="bar",
         )
 
         render_filtered_chart(
-            daily_model_data,
+            model_data,
             date_col="Date",
             label_col="DateLabel",
-            title="Signals by category",
+            title="Self-reported episode flags",
             default_cols=[
-                "Depression Signals",
-                "Mania Signals",
-                "Psychosis Signals",
+                "Self-Reported Depression",
+                "Self-Reported Mania",
+                "Self-Reported Mixed",
             ],
-            key_prefix="daily_signal_breakdown",
+            key_prefix="daily_self_reported",
             chart_type="bar",
+        )
+
+        render_filtered_chart(
+            model_data,
+            date_col="Date",
+            label_col="DateLabel",
+            title="Underlying model drivers",
+            default_cols=[
+                "Low Mood Score",
+                "High Mood Score",
+                "Low Sleep Quality",
+                "High Sleep Quality",
+                "Low Energy",
+                "High Energy",
+                "Low Mental Speed",
+                "High Mental Speed",
+                "Low Motivation",
+                "High Motivation",
+            ],
+            key_prefix="daily_drivers",
+            chart_type="line",
         )
 
         st.markdown("### Daily model data")
@@ -1721,23 +1297,30 @@ with tab_daily_model:
                 "Mania Score",
                 "Psychosis Score",
                 "Mixed Score",
-                "Total Signals",
-                "Depression Signals",
-                "Mania Signals",
-                "Psychosis Signals",
+                "3-Day Average (Depression)",
+                "3-Day Average (Mania)",
+                "3-Day Average (Psychosis)",
+                "3-Day Average (Mixed)",
+                "Concerning Situation Flags",
+                "Depression Flags",
+                "Mania Flags",
+                "Psychosis Flags",
+                "Overall Risk",
+                "Mania Warning",
+                "Psychosis Warning",
             ]
-            if c in daily_model_data.columns
+            if c in model_data.columns
         ]
 
         selected_daily_cols = st.multiselect(
             "Choose Daily Model columns",
-            daily_model_data.columns.tolist(),
-            default=default_daily_cols if default_daily_cols else daily_model_data.columns.tolist()[:10],
+            model_data.columns.tolist(),
+            default=default_daily_cols if default_daily_cols else model_data.columns.tolist()[:12],
             key="daily_model_columns",
         )
 
         if selected_daily_cols:
-            st.dataframe(daily_model_data[selected_daily_cols], use_container_width=True)
+            st.dataframe(model_data[selected_daily_cols], use_container_width=True)
         else:
             st.info("Pick at least one Daily Model column to display.")
 
@@ -1747,46 +1330,9 @@ with tab_daily_model:
 # =========================
 with tab_snapshot_model:
     st.subheader("Snapshot Model")
+    st.caption("Drawn directly from the Quick Model sheet.")
 
-    with st.expander("Snapshot Model settings"):
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            st.session_state["snapshot_settings"]["snapshot_medium_pct"] = st.number_input(
-                "Medium threshold (fraction of max score)",
-                min_value=0.0,
-                max_value=1.0,
-                value=float(st.session_state["snapshot_settings"]["snapshot_medium_pct"]),
-                step=0.01,
-                key="snapshot_medium_pct",
-            )
-
-        with col2:
-            st.session_state["snapshot_settings"]["snapshot_high_pct"] = st.number_input(
-                "High threshold (fraction of max score)",
-                min_value=0.0,
-                max_value=1.0,
-                value=float(st.session_state["snapshot_settings"]["snapshot_high_pct"]),
-                step=0.01,
-                key="snapshot_high_pct",
-            )
-
-        with col3:
-            st.session_state["snapshot_settings"]["snapshot_trend_threshold"] = st.number_input(
-                "Trend threshold",
-                min_value=0.0,
-                max_value=10.0,
-                value=float(st.session_state["snapshot_settings"]["snapshot_trend_threshold"]),
-                step=0.25,
-                key="snapshot_trend_threshold",
-            )
-
-    snapshot_model_summary, snapshot_model_data = build_snapshot_model(
-        snapshot_df_raw,
-        st.session_state["snapshot_settings"],
-    )
-
-    if snapshot_model_summary is None:
+    if snapshot_model_summary is None or snapshot_model_data.empty:
         st.info("No snapshot model data available.")
     else:
         c1, c2, c3 = st.columns(3)
@@ -1825,41 +1371,72 @@ with tab_snapshot_model:
 
         if snapshot_model_summary["Mixed"]["active"]:
             st.error(
-                f"Mixed state active — Depression and Mania are both elevated. "
-                f"Trend: {snapshot_model_summary['Mixed']['trend']} | "
+                f"Mixed state active — Trend: {snapshot_model_summary['Mixed']['trend']} | "
                 f"Confidence: {snapshot_model_summary['Mixed']['confidence']}"
             )
         else:
             st.success("Mixed state not currently active.")
 
-        snapshot_chart_df = snapshot_model_data.assign(FilterDate=snapshot_model_data["Timestamp"].dt.date)
         render_filtered_chart(
-            snapshot_chart_df,
+            snapshot_model_data,
             date_col="FilterDate",
             label_col="TimeLabel",
             title="Snapshot model scores",
-            default_cols=["Depression Score", "Mania Score", "Psychosis Score"],
+            default_cols=["Depression Score", "Mania Score", "Psychosis Score", "Mixed Score"],
             key_prefix="snapshot_model_scores",
             chart_type="line",
         )
 
-        st.markdown("### Last 5 Entries Used")
+        render_filtered_chart(
+            snapshot_model_data,
+            date_col="FilterDate",
+            label_col="TimeLabel",
+            title="3-response averages",
+            default_cols=[
+                "3-Response Average (Depression)",
+                "3-Response Average (Mania)",
+                "3-Response Average (Psychosis)",
+                "3-Response Average (Mixed)",
+            ],
+            key_prefix="snapshot_3resp_avg",
+            chart_type="line",
+        )
+
+        render_filtered_chart(
+            snapshot_model_data,
+            date_col="FilterDate",
+            label_col="TimeLabel",
+            title="Deviation from 3-response averages",
+            default_cols=[
+                "Deviation From 3-Response Average (Depression)",
+                "Deviation From 3-Response Average (Mania)",
+                "Deviation From 3-Response Average (Psychosis)",
+                "Deviation From 3-Response Average (Mixed)",
+            ],
+            key_prefix="snapshot_deviation",
+            chart_type="line",
+        )
+
+        st.markdown("### Snapshot model data")
         preview_cols = [
             c for c in [
                 "Timestamp",
                 "Depression Score",
-                "Depression Level",
                 "Mania Score",
-                "Mania Level",
                 "Psychosis Score",
-                "Psychosis Level",
-                "Depression Trend Value",
-                "Mania Trend Value",
-                "Psychosis Trend Value",
+                "Mixed Score",
+                "3-Response Average (Depression)",
+                "3-Response Average (Mania)",
+                "3-Response Average (Psychosis)",
+                "3-Response Average (Mixed)",
+                "Deviation From 3-Response Average (Depression)",
+                "Deviation From 3-Response Average (Mania)",
+                "Deviation From 3-Response Average (Psychosis)",
+                "Deviation From 3-Response Average (Mixed)",
             ]
             if c in snapshot_model_data.columns
         ]
-        st.dataframe(snapshot_model_data.tail(5)[preview_cols], use_container_width=True)
+        st.dataframe(snapshot_model_data[preview_cols], use_container_width=True)
 
 
 # =========================
@@ -1867,7 +1444,7 @@ with tab_snapshot_model:
 # =========================
 with tab_form_data:
     st.subheader("Form Data")
-    st.caption("Imported from Form Responses. Rolling averages are date-based.")
+    st.caption("Imported directly from Form Responses.")
 
     if form_data.empty:
         st.info("No form data available.")
@@ -1883,10 +1460,9 @@ with tab_form_data:
                 "Mental speed",
                 "Impulsivity",
                 "Motivation",
-                "Mood Score 3 Day Rolling Avg",
-                "Sleep (hours) 3 Day Rolling Avg",
-                "Energy 3 Day Rolling Avg",
-                "Motivation 3 Day Rolling Avg",
+                "Unusual perceptions",
+                "Suspiciousness",
+                "Certainty and belief in unusual ideas or things others don't believe",
             ]
             if c in form_data.columns
         ]
@@ -1894,7 +1470,7 @@ with tab_form_data:
         selected_form_cols = st.multiselect(
             "Choose Form Data columns",
             form_data.columns.tolist(),
-            default=default_form_cols if default_form_cols else form_data.columns.tolist()[:8],
+            default=default_form_cols if default_form_cols else form_data.columns.tolist()[:10],
             key="form_data_columns",
         )
 
@@ -1909,9 +1485,9 @@ with tab_form_data:
 # =========================
 with tab_snapshot_data:
     st.subheader("Snapshot Data")
-    st.caption("Imported from Quick Form Responses. Trends are datetime-based.")
+    st.caption("Imported directly from Quick Form Responses.")
 
-    if snapshot_data.empty:
+    if quick_form_data.empty:
         st.info("No snapshot data available.")
     else:
         default_snapshot_cols = [
@@ -1922,21 +1498,24 @@ with tab_snapshot_data:
                 "Symptoms: [Very high or elevated mood]",
                 "Symptoms: [Agitation or restlessness]",
                 "Symptoms: [Paranoia or suspicion]",
+                "Symptoms: [Very low or depressed mood] Numeric",
+                "Symptoms: [Very high or elevated mood] Numeric",
+                "Symptoms: [Paranoia or suspicion] Numeric",
                 "Symptoms: [Very low or depressed mood] Trend",
                 "Symptoms: [Very high or elevated mood] Trend",
                 "Symptoms: [Paranoia or suspicion] Trend",
             ]
-            if c in snapshot_data.columns
+            if c in quick_form_data.columns
         ]
 
         selected_snapshot_cols = st.multiselect(
             "Choose Snapshot Data columns",
-            snapshot_data.columns.tolist(),
-            default=default_snapshot_cols if default_snapshot_cols else snapshot_data.columns.tolist()[:8],
+            quick_form_data.columns.tolist(),
+            default=default_snapshot_cols if default_snapshot_cols else quick_form_data.columns.tolist()[:10],
             key="snapshot_data_columns",
         )
 
         if selected_snapshot_cols:
-            st.dataframe(snapshot_data[selected_snapshot_cols], use_container_width=True)
+            st.dataframe(quick_form_data[selected_snapshot_cols], use_container_width=True)
         else:
             st.info("Pick at least one column to display.")
