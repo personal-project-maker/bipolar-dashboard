@@ -270,6 +270,36 @@ def safe_numeric_series(df: pd.DataFrame, col: str) -> pd.Series:
     return pd.Series([pd.NA] * len(df), index=df.index, dtype="float64")
 
 
+def to_float(value, default=0.0) -> float:
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+
+    if value is None:
+        return default
+
+    text = str(value).strip()
+    if text == "":
+        return default
+
+    try:
+        return float(text)
+    except Exception:
+        return default
+
+
+def to_int(value, default=0) -> int:
+    return int(round(to_float(value, default=default)))
+
+
+def safe_cell(row: pd.Series, col: str, default=0.0):
+    if col not in row.index:
+        return default
+    return row[col]
+
+
 def status_color(level: str) -> str:
     if level == "High":
         return "#d32f2f"
@@ -308,33 +338,26 @@ def confidence_from_count(count: int, trend: str, level: str) -> str:
 
 
 def level_from_flag_count(flag_count, score=None) -> str:
-    try:
-        f = float(flag_count)
-    except Exception:
-        f = 0.0
+    f = to_float(flag_count, 0.0)
 
     if f >= 3:
         return "High"
     if f >= 1:
         return "Medium"
 
-    if score is not None and pd.notna(score):
-        try:
-            s = float(score)
+    if score is not None:
+        s = to_float(score, None)
+        if s is not None:
             if s >= 0.66:
                 return "High"
             if s >= 0.33:
                 return "Medium"
-        except Exception:
-            pass
 
     return "Low"
 
 
 def level_from_normalized_score(score) -> str:
-    if pd.isna(score):
-        return "Low"
-    s = float(score)
+    s = to_float(score, 0.0)
     if s >= 0.66:
         return "High"
     if s >= 0.33:
@@ -343,9 +366,7 @@ def level_from_normalized_score(score) -> str:
 
 
 def trend_from_deviation(dev, threshold=0.08) -> str:
-    if pd.isna(dev):
-        return "Stable"
-    d = float(dev)
+    d = to_float(dev, 0.0)
     if d > threshold:
         return "Rising"
     if d < -threshold:
@@ -645,8 +666,9 @@ def build_daily_summary_from_model(model_df: pd.DataFrame):
     def top_reasons(row, candidates):
         pairs = []
         for c in candidates:
-            if c in row.index and pd.notna(row[c]):
-                pairs.append((c, float(row[c])))
+            if c in row.index:
+                v = to_float(row[c], default=0.0)
+                pairs.append((c, v))
         pairs = sorted(pairs, key=lambda x: x[1], reverse=True)
         cleaned = []
         for c, v in pairs:
@@ -684,9 +706,9 @@ def build_daily_summary_from_model(model_df: pd.DataFrame):
         flag_col = DAILY_FLAG_COLS[name]
         dev_col = f"{name} Deviation"
 
-        score = float(latest[score_col]) if score_col in latest.index and pd.notna(latest[score_col]) else 0.0
-        flags = float(latest[flag_col]) if flag_col in latest.index and pd.notna(latest[flag_col]) else 0.0
-        deviation = float(latest[dev_col]) if dev_col in latest.index and pd.notna(latest[dev_col]) else 0.0
+        score = to_float(safe_cell(latest, score_col, 0.0), default=0.0)
+        flags = to_float(safe_cell(latest, flag_col, 0.0), default=0.0)
+        deviation = to_float(safe_cell(latest, dev_col, 0.0), default=0.0)
 
         level = level_from_flag_count(flags, score)
         trend = trend_from_deviation(deviation, threshold=0.08)
@@ -717,8 +739,8 @@ def build_quick_summary_from_model(quick_model_df: pd.DataFrame):
         score_col = QUICK_SCORE_COLS[name]
         dev_col = QUICK_DEV_COLS[name]
 
-        score = float(latest[score_col]) if score_col in latest.index and pd.notna(latest[score_col]) else 0.0
-        dev = float(latest[dev_col]) if dev_col in latest.index and pd.notna(latest[dev_col]) else 0.0
+        score = to_float(safe_cell(latest, score_col, 0.0), default=0.0)
+        dev = to_float(safe_cell(latest, dev_col, 0.0), default=0.0)
 
         level = level_from_normalized_score(score)
         trend = trend_from_deviation(dev, threshold=0.10)
@@ -732,10 +754,15 @@ def build_quick_summary_from_model(quick_model_df: pd.DataFrame):
             "confidence": confidence,
         }
 
-    mixed_score = float(latest["Mixed Score"]) if "Mixed Score" in latest.index and pd.notna(latest["Mixed Score"]) else 0.0
-    mixed_dev = float(latest["Deviation From 3-Response Average (Mixed)"]) if "Deviation From 3-Response Average (Mixed)" in latest.index and pd.notna(latest["Deviation From 3-Response Average (Mixed)"]) else 0.0
+    mixed_score = to_float(safe_cell(latest, "Mixed Score", 0.0), default=0.0)
+    mixed_dev = to_float(
+        safe_cell(latest, "Deviation From 3-Response Average (Mixed)", 0.0),
+        default=0.0,
+    )
+
     mixed_active = mixed_score >= 0.33 or (
-        summary["Depression"]["level"] in ["Medium", "High"] and summary["Mania"]["level"] in ["Medium", "High"]
+        summary["Depression"]["level"] in ["Medium", "High"]
+        and summary["Mania"]["level"] in ["Medium", "High"]
     )
 
     summary["Mixed"] = {
@@ -778,7 +805,7 @@ def get_latest_form_warning_items(form_df: pd.DataFrame) -> tuple[list[str], lis
         (COL_SUSPICIOUS, "Suspiciousness is elevated"),
         (COL_CERTAINTY, "Belief certainty is elevated"),
     ]:
-        if col in latest.index and pd.notna(latest[col]):
+        if col in latest.index:
             val = pd.to_numeric(latest[col], errors="coerce")
             if pd.isna(val):
                 continue
@@ -846,14 +873,13 @@ def get_model_concerning_findings(
                     f"Daily {name.lower()} is {item['level'].lower()} and {item['trend'].lower()}"
                 )
 
-        if "Concerning Situation Flags" in latest.index and pd.notna(latest["Concerning Situation Flags"]):
-            if float(latest["Concerning Situation Flags"]) > 0:
-                daily_findings.append(
-                    f"Concerning situation flags: {int(float(latest['Concerning Situation Flags']))}"
-                )
+        if "Concerning Situation Flags" in latest.index:
+            concerning_flags = to_float(latest["Concerning Situation Flags"], default=0.0)
+            if concerning_flags > 0:
+                daily_findings.append(f"Concerning situation flags: {int(concerning_flags)}")
 
         for col in ["Mania Warning", "Psychosis Warning", "Overall Risk"]:
-            if col in latest.index and pd.notna(latest[col]) and str(latest[col]).strip():
+            if col in latest.index and str(latest[col]).strip():
                 daily_findings.append(f"{col}: {latest[col]}")
 
     if quick_summary and not quick_model_df.empty:
@@ -1041,9 +1067,14 @@ with tab_dashboard:
             "Mixed Score",
         ]
 
-        st.line_chart(
-            trend_df[["DateLabel"] + [c for c in trend_cols if c in trend_df.columns]].set_index("DateLabel")
-        )
+        available_trend_cols = [c for c in trend_cols if c in trend_df.columns]
+
+        if available_trend_cols:
+            st.line_chart(
+                trend_df[["DateLabel"] + available_trend_cols].set_index("DateLabel")
+            )
+        else:
+            st.info("No daily score columns available for trend chart.")
     else:
         st.info("No daily trend data available.")
 
@@ -1054,13 +1085,13 @@ with tab_dashboard:
 
         m1, m2, m3, m4 = st.columns(4)
         with m1:
-            st.metric("Concerning flags", int(float(latest_daily.get("Concerning Situation Flags", 0) or 0)))
+            st.metric("Concerning flags", to_int(latest_daily.get("Concerning Situation Flags", 0)))
         with m2:
-            st.metric("Depression flags", int(float(latest_daily.get("Depression Flags", 0) or 0)))
+            st.metric("Depression flags", to_int(latest_daily.get("Depression Flags", 0)))
         with m3:
-            st.metric("Mania flags", int(float(latest_daily.get("Mania Flags", 0) or 0)))
+            st.metric("Mania flags", to_int(latest_daily.get("Mania Flags", 0)))
         with m4:
-            st.metric("Psychosis flags", int(float(latest_daily.get("Psychosis Flags", 0) or 0)))
+            st.metric("Psychosis flags", to_int(latest_daily.get("Psychosis Flags", 0)))
     else:
         st.info("No flag overview available.")
 
