@@ -1,3 +1,4 @@
+import math
 import streamlit as st
 import pandas as pd
 import gspread
@@ -51,8 +52,6 @@ SHEET_NAME = "Bipolar Dashboard"
 
 FORM_TAB = "Form Responses"
 QUICK_FORM_TAB = "Quick Form Responses"
-MODEL_TAB = "Model"
-QUICK_MODEL_TAB = "Quick Model"
 
 DOMAIN_NAMES = ["Depression", "Mania", "Psychosis", "Mixed"]
 
@@ -132,8 +131,8 @@ DEFAULT_SNAPSHOT_SETTINGS = {
     "dep_very_low_mood": 4.0,
     "dep_somewhat_low_mood": 2.0,
     "dep_withdrawal": 1.0,
-    "dep_slowed_down": 1.0,
     "dep_self_care": 1.0,
+    "dep_slowed_down": 1.0,
     "mania_very_high_mood": 4.0,
     "mania_somewhat_high_mood": 2.0,
     "mania_agitation": 1.0,
@@ -156,7 +155,7 @@ REASON_LABELS = {
     "Depression - Low Energy": "Lower energy",
     "Depression - Low Mental Speed": "Slower mental speed",
     "Depression - Low Motivation": "Lower motivation",
-    "Depression - Flags": "Depression-related flags",
+    "Depression - Flags": "Depression flag",
     "Mania - High Mood Score": "Higher mood",
     "Mania - Low Sleep Quality": "Poor sleep / reduced restorative sleep",
     "Mania - High Energy": "Higher energy",
@@ -182,8 +181,9 @@ DAILY_DOMAIN_CONFIG = {
             ("Low Mental Speed", COL_MENTAL_SPEED, True, "dep_low_mental_speed_weight"),
             ("Low Motivation", COL_MOTIVATION, True, "dep_low_motivation_weight"),
         ],
-        "flags": [SIG_WITHDRAW, SIG_AVOID_RESPONSIBILITIES, SIG_DOWN_NOW, SIG_DOWN_COMING],
+        "flags": [],
         "flag_weight_key": "dep_flag_weight",
+        "custom_flag_logic": "depression",
     },
     "Mania": {
         "components": [
@@ -242,7 +242,7 @@ DAILY_SETTINGS_UI = {
         ("dep_low_energy_weight", "Low energy", 0.0, 5.0, 0.1),
         ("dep_low_mental_speed_weight", "Low mental speed", 0.0, 5.0, 0.1),
         ("dep_low_motivation_weight", "Low motivation", 0.0, 5.0, 0.1),
-        ("dep_flag_weight", "Depression flags", 0.0, 5.0, 0.1),
+        ("dep_flag_weight", "Depression flag", 0.0, 5.0, 0.1),
     ],
     "Mania weights": [
         ("mania_high_mood_weight", "High mood", 0.0, 5.0, 0.1),
@@ -434,27 +434,27 @@ SNAPSHOT_CHARTS = [
         "type": "line",
     },
     {
-        "title": "Snapshot scores vs 3-response averages (%)",
+        "title": "Snapshot scores vs 10-response averages (%)",
         "cols": [
             "Depression Score %",
-            "3-Response Average (Depression %)",
+            "10-Response Average (Depression %)",
             "Mania Score %",
-            "3-Response Average (Mania %)",
+            "10-Response Average (Mania %)",
             "Psychosis Score %",
-            "3-Response Average (Psychosis %)",
+            "10-Response Average (Psychosis %)",
             "Mixed Score %",
-            "3-Response Average (Mixed %)",
+            "10-Response Average (Mixed %)",
         ],
         "key": "snapshot_scores_vs_avg",
         "type": "line",
     },
     {
-        "title": "Deviation from 3-response averages (percentage points)",
+        "title": "Deviation from 10-response averages (percentage points)",
         "cols": [
-            "Deviation From 3-Response Average (Depression %)",
-            "Deviation From 3-Response Average (Mania %)",
-            "Deviation From 3-Response Average (Psychosis %)",
-            "Deviation From 3-Response Average (Mixed %)",
+            "Deviation From 10-Response Average (Depression %)",
+            "Deviation From 10-Response Average (Mania %)",
+            "Deviation From 10-Response Average (Psychosis %)",
+            "Deviation From 10-Response Average (Mixed %)",
         ],
         "key": "snapshot_deviation",
         "type": "line",
@@ -651,70 +651,166 @@ def alert_rank(severity: str) -> int:
     }.get(severity, 0)
 
 
+def tone_color_tag(tone: str) -> str:
+    return {
+        "error": "red",
+        "warning": "orange",
+        "info": "blue",
+        "success": "green",
+    }.get(tone, "gray")
+
+
+def split_into_two_columns(items: list[str]) -> tuple[list[str], list[str]]:
+    if not items:
+        return [], []
+    midpoint = math.ceil(len(items) / 2)
+    return items[:midpoint], items[midpoint:]
+
+
+def find_possible_columns(df: pd.DataFrame, patterns: list[str]) -> list[str]:
+    lowered = {c.lower(): c for c in df.columns}
+    matches = []
+    for col_lower, original in lowered.items():
+        if any(p in col_lower for p in patterns):
+            matches.append(original)
+    return matches
+
+
+# =========================================================
+# DEPRESSION FLAG LOGIC
+# =========================================================
+def build_daily_depression_flag_series(daily: pd.DataFrame) -> pd.Series:
+    mood_low = pd.to_numeric(daily.get(COL_MOOD, pd.Series(pd.NA, index=daily.index)), errors="coerce") <= 3
+    mental_speed_low = pd.to_numeric(daily.get(COL_MENTAL_SPEED, pd.Series(pd.NA, index=daily.index)), errors="coerce") < 4
+    motivation_low = pd.to_numeric(daily.get(COL_MOTIVATION, pd.Series(pd.NA, index=daily.index)), errors="coerce") < 4
+
+    dep_flag = mood_low | (mental_speed_low & motivation_low)
+    return dep_flag.fillna(False).astype(int)
+
+
+def build_snapshot_depression_flag_series(df: pd.DataFrame) -> pd.Series:
+    result = pd.Series(False, index=df.index)
+
+    fixed_cols = [
+        "Symptoms: [Very low or depressed mood]",
+        "Symptoms: [Somewhat low or depressed mood]",
+    ]
+    existing_fixed = [c for c in fixed_cols if c in df.columns]
+    for col in existing_fixed:
+        result = result | (df[col].astype(str).str.strip().str.lower().isin(["yes", "somewhat"]))
+
+    possible_dep_cols = find_possible_columns(
+        df,
+        [
+            "experiencing a down",
+            "going to experience a down",
+            "in a depression",
+            "going into a depression",
+            "depression now",
+            "depression coming",
+        ],
+    )
+    for col in possible_dep_cols:
+        result = result | (df[col].astype(str).str.strip().str.lower().isin(["yes", "somewhat"]))
+
+    return result.astype(int)
+
+
 # =========================================================
 # UI HELPERS - STREAMLIT NATIVE
 # =========================================================
 def render_status_card(title: str, score_pct: float, level: str, trend: str, confidence: str):
-    st.markdown(f"#### {title}")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric("Current", f"{level} ({score_pct:.1f}%)")
-        st.write(f"**Trend:** {trend}")
-    with c2:
-        st.write(f"**Confidence:** {confidence}")
+    with st.container(border=True):
+        st.markdown(f"#### {title}")
+
+        level_color = {"High": "red", "Medium": "orange", "Low": "green"}.get(level, "gray")
+        conf_color = {"High": "green", "Medium": "orange", "Low": "gray"}.get(confidence, "gray")
+        trend_color = {"Rising": "orange", "Falling": "blue", "Stable": "green"}.get(trend, "gray")
+
+        st.markdown(f"**Current:** :{level_color}[{level}] ({score_pct:.1f}%)")
+        st.markdown(f"**Trend:** :{trend_color}[{trend}]")
+        st.markdown(f"**Confidence:** :{conf_color}[{confidence}]")
 
 
 def render_daily_card(title: str, data: dict):
-    st.markdown(f"#### {title}")
+    with st.container(border=True):
+        st.markdown(f"#### {title}")
 
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric("Current state", f"{data['level']} ({data['score_pct']:.1f}%)")
-        st.write(f"**Recent direction:** {data['trend']}")
-    with c2:
-        st.write(f"**Confidence:** {data['confidence']}")
+        level_color = {"High": "red", "Medium": "orange", "Low": "green"}.get(data["level"], "gray")
+        conf_color = {"High": "green", "Medium": "orange", "Low": "gray"}.get(data["confidence"], "gray")
+        trend_color = {"Rising": "orange", "Falling": "blue", "Stable": "green"}.get(data["trend"], "gray")
 
-    if data.get("baseline_note"):
-        st.write(f"**Compared with usual:** {data['baseline_note']}")
+        st.markdown(f"**Current state:** :{level_color}[{data['level']}] ({data['score_pct']:.1f}%)")
+        st.markdown(f"**Recent direction:** :{trend_color}[{data['trend']}]")
+        st.markdown(f"**Confidence:** :{conf_color}[{data['confidence']}]")
 
-    if data.get("baseline_z_text"):
-        with st.expander("Baseline detail"):
-            st.write(data["baseline_z_text"])
+        if data.get("baseline_note"):
+            st.markdown(f"**Compared with usual:** {data['baseline_note']}")
 
-    st.write("**Main drivers:**")
-    reasons = data.get("reasons", [])
-    if reasons:
-        for reason in reasons:
-            st.write(f"- {reason}")
-    else:
-        st.write("- No strong drivers")
+        if data.get("baseline_z_text"):
+            with st.expander("Baseline detail"):
+                st.write(data["baseline_z_text"])
+
+        reasons = data.get("reasons", [])
+        st.markdown("**Main drivers:**")
+        if reasons:
+            r1, r2 = split_into_two_columns(reasons)
+            c1, c2 = st.columns(2)
+            with c1:
+                for reason in r1:
+                    st.write(f"- {reason}")
+            with c2:
+                for reason in r2:
+                    st.write(f"- {reason}")
+        else:
+            st.write("- No strong drivers")
 
 
-def render_signal_box(title: str, items: list[str], tone: str = "info"):
-    content = "\n".join([f"- {i}" for i in items]) if items else "- None"
+def render_two_column_flag_box(title: str, items: list[str], tone: str = "info"):
+    with st.container(border=True):
+        color = tone_color_tag(tone)
+        st.markdown(f"#### :{color}[{title}]")
 
-    if tone == "error":
-        st.error(f"**{title}**\n\n{content}")
-    elif tone == "warning":
-        st.warning(f"**{title}**\n\n{content}")
-    else:
-        st.info(f"**{title}**\n\n{content}")
+        if not items:
+            st.markdown(":gray[- None]")
+            return
+
+        left_items, right_items = split_into_two_columns(items)
+        c1, c2 = st.columns(2)
+
+        with c1:
+            for item in left_items:
+                st.markdown(f":{color}[- {item}]")
+
+        with c2:
+            for item in right_items:
+                st.markdown(f":{color}[- {item}]")
 
 
 def render_alert_card(alert: dict):
-    details = "\n".join([f"- {d}" for d in alert.get("details", [])]) if alert.get("details") else "- None"
-    content = (
-        f"**Status:** {alert['severity']}\n\n"
-        f"**Summary:** {alert['summary']}\n\n"
-        f"**Details:**\n{details}"
-    )
+    tone = {
+        "High concern": "error",
+        "Pay attention today": "warning",
+        "Monitor": "info",
+    }.get(alert["severity"], "info")
+    color = tone_color_tag(tone)
 
-    if alert["severity"] == "High concern":
-        st.error(f"**{alert['title']}**\n\n{content}")
-    elif alert["severity"] == "Pay attention today":
-        st.warning(f"**{alert['title']}**\n\n{content}")
-    else:
-        st.info(f"**{alert['title']}**\n\n{content}")
+    with st.container(border=True):
+        st.markdown(f"#### :{color}[{alert['title']}]")
+        st.markdown(f"**Status:** :{color}[{alert['severity']}]")
+        st.markdown(f"**Summary:** {alert['summary']}")
+
+        details = alert.get("details", [])
+        if details:
+            st.markdown("**Details:**")
+            d1, d2 = split_into_two_columns(details)
+            c1, c2 = st.columns(2)
+            with c1:
+                for d in d1:
+                    st.markdown(f":{color}[- {d}]")
+            with c2:
+                for d in d2:
+                    st.markdown(f":{color}[- {d}]")
 
 
 def render_summary_cards(summary: dict, detailed: bool = False):
@@ -725,17 +821,16 @@ def render_summary_cards(summary: dict, detailed: bool = False):
     cols = st.columns(len(summary))
     for col, name in zip(cols, summary.keys()):
         with col:
-            with st.container(border=True):
-                if detailed:
-                    render_daily_card(name, summary[name])
-                else:
-                    render_status_card(
-                        name,
-                        summary[name]["score_pct"],
-                        summary[name]["level"],
-                        summary[name]["trend"],
-                        summary[name]["confidence"],
-                    )
+            if detailed:
+                render_daily_card(name, summary[name])
+            else:
+                render_status_card(
+                    name,
+                    summary[name]["score_pct"],
+                    summary[name]["level"],
+                    summary[name]["trend"],
+                    summary[name]["confidence"],
+                )
 
 
 def render_settings_form(session_key: str, settings_ui: dict, columns_per_row: int = 3):
@@ -968,28 +1063,33 @@ def build_domain_scores(daily: pd.DataFrame, domain_name: str, config: dict, set
         daily[out_col] = normalize_0_10_to_pct(source_series, inverse=inverse)
         component_pairs.append((out_col, float(settings[weight_key])))
 
-    flag_cols = [c for c in config["flags"] if c in daily.columns]
     flag_score_col = f"{domain_name} - Flags"
+    flags_col = f"{domain_name} Flags"
 
-    if flag_cols:
-        daily[flag_score_col] = normalize_flag_count_to_pct(
-            daily[flag_cols].sum(axis=1),
-            max_flags=len(flag_cols),
-        )
+    if config.get("custom_flag_logic") == "depression":
+        daily[flags_col] = build_daily_depression_flag_series(daily)
+        daily[flag_score_col] = normalize_flag_count_to_pct(daily[flags_col], max_flags=1)
     else:
-        daily[flag_score_col] = 0.0
+        flag_cols = [c for c in config["flags"] if c in daily.columns]
+        if flag_cols:
+            daily[flags_col] = daily[flag_cols].sum(axis=1)
+            daily[flag_score_col] = normalize_flag_count_to_pct(
+                daily[flags_col],
+                max_flags=len(flag_cols),
+            )
+        else:
+            daily[flags_col] = 0
+            daily[flag_score_col] = 0.0
 
     component_pairs.append((flag_score_col, float(settings[config["flag_weight_key"]])))
 
     score_col = f"{domain_name} Score %"
     avg_col = f"3-Day Average ({domain_name} %)"
     dev_col = f"{domain_name} Deviation %"
-    flags_col = f"{domain_name} Flags"
 
     daily[score_col] = weighted_average_percent(daily, component_pairs)
     daily[avg_col] = daily[score_col].rolling(window=3, min_periods=1).mean()
     daily[dev_col] = daily[score_col] - daily[avg_col]
-    daily[flags_col] = daily[flag_cols].sum(axis=1) if flag_cols else 0
 
     return daily
 
@@ -1092,7 +1192,7 @@ def build_domain_summary(df: pd.DataFrame, settings: dict, domains: list[str], i
                 REASON_LABELS.get(col, col.replace(f"{name} - ", ""))
                 for col, value in raw_reasons
                 if value > 0
-            ][:3]
+            ][:4]
 
         summary[name] = item
 
@@ -1202,6 +1302,8 @@ def build_snapshot_model_from_quick_form(quick_form_df: pd.DataFrame, settings: 
         weights = [(col, float(settings[weight_key])) for col, weight_key in config["components"]]
         working[f"{domain_name} Score %"] = weighted_average_percent_from_responses(working, weights)
 
+    working["Depression Flags"] = build_snapshot_depression_flag_series(working)
+
     mixed_total_weight = (
         float(settings["mixed_dep_weight"])
         + float(settings["mixed_mania_weight"])
@@ -1218,9 +1320,9 @@ def build_snapshot_model_from_quick_form(quick_form_df: pd.DataFrame, settings: 
 
     for name in DOMAIN_NAMES:
         score_col = f"{name} Score %"
-        avg_col = f"3-Response Average ({name} %)"
-        dev_col = f"Deviation From 3-Response Average ({name} %)"
-        working[avg_col] = working[score_col].rolling(window=3, min_periods=1).mean()
+        avg_col = f"10-Response Average ({name} %)"
+        dev_col = f"Deviation From 10-Response Average ({name} %)"
+        working[avg_col] = working[score_col].rolling(window=10, min_periods=1).mean()
         working[dev_col] = working[score_col] - working[avg_col]
 
     working["FilterDate"] = working["Timestamp"].dt.date
@@ -1237,7 +1339,7 @@ def build_snapshot_model_from_quick_form(quick_form_df: pd.DataFrame, settings: 
 
         for name in DOMAIN_NAMES:
             score_pct = to_float(latest.get(f"{name} Score %", 0.0), 0.0)
-            dev_pct = to_float(latest.get(f"Deviation From 3-Response Average ({name} %)", 0.0), 0.0)
+            dev_pct = to_float(latest.get(f"Deviation From 10-Response Average ({name} %)", 0.0), 0.0)
             level = level_from_percent(score_pct, medium_pct, high_pct)
             trend = trend_from_deviation_pct(dev_pct, trend_threshold_pct)
             confidence = confidence_from_count(len(last5), trend, level)
@@ -1485,6 +1587,7 @@ def get_model_concerning_findings(
     daily_summary: dict | None,
     snapshot_summary: dict | None,
     daily_model_df: pd.DataFrame,
+    snapshot_model_df: pd.DataFrame,
 ) -> tuple[list[str], list[str]]:
     daily_findings = []
     snapshot_findings = []
@@ -1507,6 +1610,11 @@ def get_model_concerning_findings(
             item = snapshot_summary[name]
             if item["level"] in ["Medium", "High"]:
                 snapshot_findings.append(f"Snapshot {name.lower()} is {item['level'].lower()} and {item['trend'].lower()}")
+
+    if not snapshot_model_df.empty:
+        latest_snapshot = snapshot_model_df.iloc[-1]
+        if to_int(latest_snapshot.get("Depression Flags", 0)) > 0:
+            snapshot_findings.append("Snapshot depression flag is present")
 
     return daily_findings, snapshot_findings
 
@@ -1535,7 +1643,7 @@ def render_dashboard_page(
     st.markdown("### Today's interpretation")
     top_alert = alerts[0]["severity"] if alerts else "Monitor"
     tone = "error" if top_alert == "High concern" else ("warning" if top_alert == "Pay attention today" else "info")
-    render_signal_box("Today at a glance", [today_summary], tone=tone)
+    render_two_column_flag_box("Today at a glance", [today_summary], tone=tone)
 
     st.markdown("### Current alerts")
     if alerts:
@@ -1557,14 +1665,14 @@ def render_dashboard_page(
     warn_left, warn_right = st.columns(2)
 
     with warn_left:
-        render_signal_box(
+        render_two_column_flag_box(
             "Daily questionnaire / model",
             latest_form_findings + daily_model_findings + latest_form_signals,
             tone="error" if (latest_form_findings or daily_model_findings) else "warning",
         )
 
     with warn_right:
-        render_signal_box(
+        render_two_column_flag_box(
             "Snapshot questionnaire / model",
             latest_snapshot_findings + snapshot_model_findings + latest_snapshot_signals,
             tone="error" if (latest_snapshot_findings or snapshot_model_findings) else "warning",
@@ -1684,7 +1792,7 @@ def render_warnings_page(
 ):
     st.subheader("Warnings")
 
-    render_signal_box("Today at a glance", [today_summary], tone="info")
+    render_two_column_flag_box("Today at a glance", [today_summary], tone="info")
 
     st.markdown("### Alert engine output")
     if alerts:
@@ -1703,12 +1811,12 @@ def render_warnings_page(
     left, right = st.columns(2)
 
     with left:
-        render_signal_box("Daily questionnaire — warning signals", latest_form_signals, tone="warning")
-        render_signal_box("Daily questionnaire — concerning findings", latest_form_findings + daily_model_findings, tone="error")
+        render_two_column_flag_box("Daily questionnaire — warning signals", latest_form_signals, tone="warning")
+        render_two_column_flag_box("Daily questionnaire — concerning findings", latest_form_findings + daily_model_findings, tone="error")
 
     with right:
-        render_signal_box("Snapshot questionnaire — warning signals", latest_snapshot_signals, tone="warning")
-        render_signal_box("Snapshot questionnaire — concerning findings", latest_snapshot_findings + snapshot_model_findings, tone="error")
+        render_two_column_flag_box("Snapshot questionnaire — warning signals", latest_snapshot_signals, tone="warning")
+        render_two_column_flag_box("Snapshot questionnaire — concerning findings", latest_snapshot_findings + snapshot_model_findings, tone="error")
 
 
 def render_daily_model_page(form_data):
@@ -1789,17 +1897,18 @@ def render_snapshot_model_page(quick_form_data):
         c for c in [
             "Timestamp",
             "Depression Score %",
+            "Depression Flags",
             "Mania Score %",
             "Psychosis Score %",
             "Mixed Score %",
-            "3-Response Average (Depression %)",
-            "3-Response Average (Mania %)",
-            "3-Response Average (Psychosis %)",
-            "3-Response Average (Mixed %)",
-            "Deviation From 3-Response Average (Depression %)",
-            "Deviation From 3-Response Average (Mania %)",
-            "Deviation From 3-Response Average (Psychosis %)",
-            "Deviation From 3-Response Average (Mixed %)",
+            "10-Response Average (Depression %)",
+            "10-Response Average (Mania %)",
+            "10-Response Average (Psychosis %)",
+            "10-Response Average (Mixed %)",
+            "Deviation From 10-Response Average (Depression %)",
+            "Deviation From 10-Response Average (Mania %)",
+            "Deviation From 10-Response Average (Psychosis %)",
+            "Deviation From 10-Response Average (Mixed %)",
         ]
         if c in snapshot_model_data.columns
     ]
@@ -1852,6 +1961,7 @@ def render_snapshot_data_page(quick_form_data):
             "Symptoms: [Very high or elevated mood] Percent",
             "Symptoms: [Paranoia or suspicion]",
             "Symptoms: [Paranoia or suspicion] Percent",
+            "Depression Flags",
         ]
         if c in quick_form_data.columns
     ]
@@ -1894,6 +2004,7 @@ daily_model_findings, snapshot_model_findings = get_model_concerning_findings(
     daily_model_summary,
     snapshot_model_summary,
     daily_model_data,
+    snapshot_model_data,
 )
 
 alerts = build_alerts(
