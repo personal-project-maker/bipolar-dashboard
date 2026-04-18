@@ -54,6 +54,7 @@ FORM_TAB = "Form Responses"
 QUICK_FORM_TAB = "Quick Form Responses"
 
 DOMAIN_NAMES = ["Depression", "Mania", "Psychosis", "Mixed"]
+DAILY_ROLLING_WINDOW_DAYS = 5
 
 COLUMN_ALIASES = {
     "Signals and indicators [Avoided normal responsiblities]":
@@ -63,8 +64,6 @@ COLUMN_ALIASES = {
     "Weekly Check-In  Flags":
         "Weekly Check-In Flags",
     "Column 1": "Date",
-
-    # spreadsheet rename support
     "Positive motivation": "Motivation",
 }
 
@@ -108,16 +107,17 @@ DEFAULT_DAILY_SETTINGS = {
     "dep_low_sleep_quality_weight": 1.0,
     "dep_low_energy_weight": 1.0,
     "dep_low_mental_speed_weight": 1.0,
-    "dep_low_motivation_weight": 1.0,
+    "dep_low_motivation_weight": 2.0,
     "dep_flag_weight": 1.0,
 
-    "mania_high_mood_weight": 4.0,
-    "mania_low_sleep_quality_weight": 1.0,
-    "mania_high_energy_weight": 1.0,
-    "mania_high_mental_speed_weight": 1.0,
-    "mania_high_irritability_weight": 1.0,
-    "mania_high_agitation_weight": 1.0,
-    "mania_flag_weight": 1.0,
+    "mania_high_mood_weight": 1.0,
+    "mania_low_sleep_quality_weight": 2.0,
+    "mania_high_energy_weight": 1.5,
+    "mania_high_mental_speed_weight": 1.5,
+    "mania_high_impulsivity_weight": 1.5,
+    "mania_high_irritability_weight": 2.0,
+    "mania_high_agitation_weight": 2.0,
+    "mania_flag_weight": 2.0,
 
     "psych_unusual_weight": 1.0,
     "psych_suspicious_weight": 1.0,
@@ -142,11 +142,11 @@ DEFAULT_SNAPSHOT_SETTINGS = {
     "dep_withdrawal": 1.0,
     "dep_self_care": 1.0,
     "dep_slowed_down": 1.0,
-    "mania_very_high_mood": 4.0,
-    "mania_somewhat_high_mood": 2.0,
-    "mania_agitation": 1.0,
-    "mania_racing": 1.0,
-    "mania_driven": 1.0,
+    "mania_very_high_mood": 2.0,
+    "mania_somewhat_high_mood": 1.0,
+    "mania_agitation": 2.0,
+    "mania_racing": 1.5,
+    "mania_driven": 2.0,
     "psych_hearing_seeing": 1.0,
     "psych_paranoia": 1.0,
     "psych_beliefs": 1.0,
@@ -170,6 +170,7 @@ REASON_LABELS = {
     "Mania - Low Sleep Quality": "Poor sleep / reduced restorative sleep",
     "Mania - High Energy": "Higher energy",
     "Mania - High Mental Speed": "Faster mental speed",
+    "Mania - High Impulsivity": "Higher impulsivity",
     "Mania - High Irritability": "Higher irritability",
     "Mania - High Agitation": "Higher agitation",
     "Mania - Flags": "Mania-related flags",
@@ -203,6 +204,7 @@ DAILY_DOMAIN_CONFIG = {
             ("Low Sleep Quality", COL_SLEEP_QUALITY, True, "mania_low_sleep_quality_weight"),
             ("High Energy", COL_ENERGY, False, "mania_high_energy_weight"),
             ("High Mental Speed", COL_MENTAL_SPEED, False, "mania_high_mental_speed_weight"),
+            ("High Impulsivity", COL_IMPULSIVITY, False, "mania_high_impulsivity_weight"),
             ("High Irritability", COL_IRRITABILITY, False, "mania_high_irritability_weight"),
             ("High Agitation", COL_AGITATION, False, "mania_high_agitation_weight"),
         ],
@@ -262,6 +264,7 @@ DAILY_SETTINGS_UI = {
         ("mania_low_sleep_quality_weight", "Low sleep quality (mania)", 0.0, 5.0, 0.1),
         ("mania_high_energy_weight", "High energy", 0.0, 5.0, 0.1),
         ("mania_high_mental_speed_weight", "High mental speed", 0.0, 5.0, 0.1),
+        ("mania_high_impulsivity_weight", "High impulsivity", 0.0, 5.0, 0.1),
         ("mania_high_irritability_weight", "High irritability", 0.0, 5.0, 0.1),
         ("mania_high_agitation_weight", "High agitation", 0.0, 5.0, 0.1),
         ("mania_flag_weight", "Mania flags", 0.0, 5.0, 0.1),
@@ -331,18 +334,18 @@ DAILY_CHARTS = [
         "type": "line",
     },
     {
-        "title": "3-day averages (%)",
+        "title": "5-day averages (%)",
         "cols": [
-            "3-Day Average (Depression %)",
-            "3-Day Average (Mania %)",
-            "3-Day Average (Psychosis %)",
-            "3-Day Average (Mixed %)",
+            "5-Day Average (Depression %)",
+            "5-Day Average (Mania %)",
+            "5-Day Average (Psychosis %)",
+            "5-Day Average (Mixed %)",
         ],
-        "key": "daily_3day_avg",
+        "key": "daily_5day_avg",
         "type": "line",
     },
     {
-        "title": "Deviation from 3-day averages (percentage points)",
+        "title": "Deviation from 5-day averages (percentage points)",
         "cols": [
             "Depression Deviation %",
             "Mania Deviation %",
@@ -421,6 +424,7 @@ DAILY_CHARTS = [
             "Mania - Low Sleep Quality",
             "Mania - High Energy",
             "Mania - High Mental Speed",
+            "Mania - High Impulsivity",
             "Mania - High Irritability",
             "Mania - High Agitation",
             "Mania - Flags",
@@ -1051,10 +1055,7 @@ def prepare_form_raw(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     working = convert_numeric(df.copy())
-    working = drop_blank_tail_rows(
-        working,
-        ["Timestamp", COL_MOOD, COL_SLEEP_QUALITY, COL_ENERGY],
-    )
+    working = drop_blank_tail_rows(working, ["Timestamp", COL_MOOD, COL_SLEEP_QUALITY, COL_ENERGY])
 
     if "Timestamp" in working.columns:
         working["Timestamp"] = pd.to_datetime(working["Timestamp"], errors="coerce")
@@ -1096,11 +1097,10 @@ def build_domain_scores(daily: pd.DataFrame, domain_name: str, config: dict, set
         source_series = daily[source_col] if source_col in daily.columns else pd.Series(0, index=daily.index)
         daily[out_col] = normalize_0_10_to_pct(source_series, inverse=inverse)
 
-        # taking sleeping pills marks the day as bad sleep
         if label == "Low Sleep Quality":
             daily[out_col] = pd.concat(
                 [daily[out_col], sleep_pills_pct],
-                axis=1,
+                axis=1
             ).max(axis=1)
 
         component_pairs.append((out_col, float(settings[weight_key])))
@@ -1126,11 +1126,11 @@ def build_domain_scores(daily: pd.DataFrame, domain_name: str, config: dict, set
     component_pairs.append((flag_score_col, float(settings[config["flag_weight_key"]])))
 
     score_col = f"{domain_name} Score %"
-    avg_col = f"3-Day Average ({domain_name} %)"
+    avg_col = f"{DAILY_ROLLING_WINDOW_DAYS}-Day Average ({domain_name} %)"
     dev_col = f"{domain_name} Deviation %"
 
     daily[score_col] = weighted_average_percent(daily, component_pairs)
-    daily[avg_col] = daily[score_col].rolling(window=3, min_periods=1).mean()
+    daily[avg_col] = daily[score_col].rolling(window=DAILY_ROLLING_WINDOW_DAYS, min_periods=1).mean()
     daily[dev_col] = daily[score_col] - daily[avg_col]
 
     return daily
@@ -1326,8 +1326,10 @@ def build_daily_model_from_form(form_df: pd.DataFrame, settings: dict):
         + daily.get("Depression - Low Sleep Quality", pd.Series(0, index=daily.index)) * float(settings["mixed_low_sleep_quality_weight"])
     ) / mixed_weight_total
 
-    daily["3-Day Average (Mixed %)"] = daily["Mixed Score %"].rolling(window=3, min_periods=1).mean()
-    daily["Mixed Deviation %"] = daily["Mixed Score %"] - daily["3-Day Average (Mixed %)"]
+    daily[f"{DAILY_ROLLING_WINDOW_DAYS}-Day Average (Mixed %)"] = daily["Mixed Score %"].rolling(
+        window=DAILY_ROLLING_WINDOW_DAYS, min_periods=1
+    ).mean()
+    daily["Mixed Deviation %"] = daily["Mixed Score %"] - daily[f"{DAILY_ROLLING_WINDOW_DAYS}-Day Average (Mixed %)"]
 
     mixed_flag_components = [
         c for c in [SIG_MIXED_NOW, SIG_MIXED_COMING, SIG_WITHDRAW, SIG_LESS_SLEEP, SIG_MORE_ACTIVITY]
@@ -1963,18 +1965,22 @@ def render_daily_model_page(form_data):
         c for c in [
             "Date",
             "Depression Score %",
+            "5-Day Average (Depression %)",
             "Depression Baseline %",
             "Depression Baseline Difference %",
             "Depression Baseline Z",
             "Mania Score %",
+            "5-Day Average (Mania %)",
             "Mania Baseline %",
             "Mania Baseline Difference %",
             "Mania Baseline Z",
             "Psychosis Score %",
+            "5-Day Average (Psychosis %)",
             "Psychosis Baseline %",
             "Psychosis Baseline Difference %",
             "Psychosis Baseline Z",
             "Mixed Score %",
+            "5-Day Average (Mixed %)",
             "Mixed Baseline %",
             "Mixed Baseline Difference %",
             "Mixed Baseline Z",
