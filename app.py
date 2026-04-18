@@ -1194,6 +1194,17 @@ def build_domain_summary(df: pd.DataFrame, settings: dict, domains: list[str], i
                 if value > 0
             ][:4]
 
+        # PATCH 1/3: suppress elevated depression presentation unless flag is on
+        if name == "Depression":
+            dep_flag_on = to_int(latest.get("Depression Flags", 0)) > 0
+            if not dep_flag_on:
+                item["level"] = "Low"
+                item["trend"] = "Stable"
+                item["confidence"] = "Low"
+                item["reasons"] = []
+                item["baseline_note"] = ""
+                item["baseline_z_text"] = ""
+
         summary[name] = item
 
     return summary
@@ -1344,6 +1355,12 @@ def build_snapshot_model_from_quick_form(quick_form_df: pd.DataFrame, settings: 
             trend = trend_from_deviation_pct(dev_pct, trend_threshold_pct)
             confidence = confidence_from_count(len(last5), trend, level)
 
+            # keep snapshot depression summary also gated
+            if name == "Depression" and to_int(latest.get("Depression Flags", 0)) == 0:
+                level = "Low"
+                trend = "Stable"
+                confidence = "Low"
+
             summary[name] = {
                 "score_pct": score_pct,
                 "level": level,
@@ -1366,7 +1383,13 @@ def get_domain_persistence(df: pd.DataFrame, domain: str, medium_threshold: floa
     return int((recent >= medium_threshold).all())
 
 
-def build_alerts(daily_model_data: pd.DataFrame, daily_summary: dict | None, snapshot_summary: dict | None, settings: dict):
+def build_alerts(
+    daily_model_data: pd.DataFrame,
+    daily_summary: dict | None,
+    snapshot_summary: dict | None,
+    settings: dict,
+    snapshot_model_data: pd.DataFrame | None = None,
+):
     alerts = []
 
     if daily_model_data.empty or not daily_summary:
@@ -1378,8 +1401,18 @@ def build_alerts(daily_model_data: pd.DataFrame, daily_summary: dict | None, sna
     high_anomaly_thr = float(settings.get("high_anomaly_z_threshold", 2.5))
     persistence_days = int(settings.get("persistence_days", 3))
 
+    daily_dep_flag_on = to_int(latest.get("Depression Flags", 0)) > 0
+    snapshot_dep_flag_on = False
+    if snapshot_model_data is not None and not snapshot_model_data.empty:
+        snapshot_dep_flag_on = to_int(snapshot_model_data.iloc[-1].get("Depression Flags", 0)) > 0
+
     for name in DOMAIN_NAMES:
         item = daily_summary[name]
+
+        # PATCH 2/3: suppress depression alerts unless depression flag is on
+        if name == "Depression" and not daily_dep_flag_on:
+            continue
+
         details = []
 
         if item["level"] in ["Medium", "High"]:
@@ -1401,8 +1434,9 @@ def build_alerts(daily_model_data: pd.DataFrame, daily_summary: dict | None, sna
         if snapshot_summary and name in snapshot_summary:
             snap_level = snapshot_summary[name]["level"]
             if snap_level in ["Medium", "High"]:
-                snapshot_agrees = True
-                details.append(f"Snapshot model also shows {name.lower()} as {snap_level.lower()}.")
+                if name != "Depression" or snapshot_dep_flag_on:
+                    snapshot_agrees = True
+                    details.append(f"Snapshot model also shows {name.lower()} as {snap_level.lower()}.")
 
         severity = None
         if item["level"] == "High":
@@ -1446,8 +1480,20 @@ def build_alerts(daily_model_data: pd.DataFrame, daily_summary: dict | None, sna
             ],
         })
 
-    active_high_domains = [d for d in DOMAIN_NAMES if daily_summary[d]["level"] == "High"]
-    active_med_plus = [d for d in DOMAIN_NAMES if daily_summary[d]["level"] in ["Medium", "High"]]
+    active_high_domains = [
+        d for d in DOMAIN_NAMES
+        if d != "Depression" and daily_summary[d]["level"] == "High"
+    ]
+    active_med_plus = [
+        d for d in DOMAIN_NAMES
+        if d != "Depression" and daily_summary[d]["level"] in ["Medium", "High"]
+    ]
+
+    if daily_dep_flag_on and daily_summary["Depression"]["level"] in ["Medium", "High"]:
+        active_med_plus.append("Depression")
+        if daily_summary["Depression"]["level"] == "High":
+            active_high_domains.append("Depression")
+
     if len(active_high_domains) >= 2 or len(active_med_plus) >= 3:
         alerts.append({
             "severity": "High concern",
@@ -1592,11 +1638,24 @@ def get_model_concerning_findings(
     daily_findings = []
     snapshot_findings = []
 
+    daily_dep_flag_on = False
+    if not daily_model_df.empty:
+        daily_dep_flag_on = to_int(daily_model_df.iloc[-1].get("Depression Flags", 0)) > 0
+
+    snapshot_dep_flag_on = False
+    if not snapshot_model_df.empty:
+        snapshot_dep_flag_on = to_int(snapshot_model_df.iloc[-1].get("Depression Flags", 0)) > 0
+
+    # PATCH 3/3: suppress depression findings unless the flag is on
     if daily_summary and not daily_model_df.empty:
         for name in DOMAIN_NAMES:
+            if name == "Depression" and not daily_dep_flag_on:
+                continue
+
             item = daily_summary[name]
             if item["level"] in ["Medium", "High"]:
                 daily_findings.append(f"Daily {name.lower()} is {item['level'].lower()} and {item['trend'].lower()}")
+
             if abs(to_float(item.get("baseline_z", 0.0), 0.0)) >= 1.5:
                 daily_findings.append(f"Daily {name.lower()} is unusual relative to your recent baseline")
 
@@ -1607,14 +1666,15 @@ def get_model_concerning_findings(
 
     if snapshot_summary:
         for name in DOMAIN_NAMES:
+            if name == "Depression" and not snapshot_dep_flag_on:
+                continue
+
             item = snapshot_summary[name]
             if item["level"] in ["Medium", "High"]:
                 snapshot_findings.append(f"Snapshot {name.lower()} is {item['level'].lower()} and {item['trend'].lower()}")
 
-    if not snapshot_model_df.empty:
-        latest_snapshot = snapshot_model_df.iloc[-1]
-        if to_int(latest_snapshot.get("Depression Flags", 0)) > 0:
-            snapshot_findings.append("Snapshot depression flag is present")
+    if snapshot_dep_flag_on:
+        snapshot_findings.append("Snapshot depression flag is present")
 
     return daily_findings, snapshot_findings
 
@@ -2012,6 +2072,7 @@ alerts = build_alerts(
     daily_summary=daily_model_summary,
     snapshot_summary=snapshot_model_summary,
     settings=st.session_state["daily_settings"],
+    snapshot_model_data=snapshot_model_data,
 )
 
 today_summary = build_today_summary(
