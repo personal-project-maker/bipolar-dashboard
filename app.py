@@ -102,6 +102,21 @@ SIG_UP_COMING = "Signals and indicators [Feel like I'm going to experience an up
 SIG_DOWN_COMING = "Signals and indicators [Feel like I'm going to experience a down]"
 SIG_MIXED_COMING = "Signals and indicators [Feel like I'm going to experience a mixed]"
 
+NORMAL_RANGES = {
+    COL_MOOD: {"low": 4.0, "high": 7.0, "direction": "outside"},
+    COL_SLEEP_HOURS: {"low": 6.0, "high": 9.0, "direction": "outside"},
+    COL_SLEEP_QUALITY: {"low": 5.0, "high": None, "direction": "low_only"},
+    COL_ENERGY: {"low": 3.0, "high": 7.0, "direction": "outside"},
+    COL_MENTAL_SPEED: {"low": 3.0, "high": 7.0, "direction": "outside"},
+    COL_IMPULSIVITY: {"low": None, "high": 4.0, "direction": "high_only"},
+    COL_MOTIVATION: {"low": 4.0, "high": None, "direction": "low_only"},
+    COL_IRRITABILITY: {"low": None, "high": 4.0, "direction": "high_only"},
+    COL_AGITATION: {"low": None, "high": 4.0, "direction": "high_only"},
+    COL_UNUSUAL: {"low": None, "high": 2.0, "direction": "high_only"},
+    COL_SUSPICIOUS: {"low": None, "high": 3.0, "direction": "high_only"},
+    COL_CERTAINTY: {"low": None, "high": 3.0, "direction": "high_only"},
+}
+
 DEFAULT_DAILY_SETTINGS = {
     "dep_low_mood_weight": 4.0,
     "dep_low_sleep_quality_weight": 1.0,
@@ -123,10 +138,12 @@ DEFAULT_DAILY_SETTINGS = {
     "psych_suspicious_weight": 1.0,
     "psych_certainty_weight": 3.0,
     "psych_flag_weight": 1.0,
+
     "mixed_dep_weight": 0.4,
     "mixed_mania_weight": 0.4,
     "mixed_psych_weight": 0.2,
     "mixed_low_sleep_quality_weight": 0.5,
+
     "medium_threshold_pct": 33.0,
     "high_threshold_pct": 66.0,
     "trend_threshold_pct": 8.0,
@@ -134,6 +151,8 @@ DEFAULT_DAILY_SETTINGS = {
     "anomaly_z_threshold": 1.5,
     "high_anomaly_z_threshold": 2.5,
     "persistence_days": 3,
+    "normal_breach_alert_pct": 40.0,
+    "normal_breach_high_alert_pct": 60.0,
 }
 
 DEFAULT_SNAPSHOT_SETTINGS = {
@@ -291,6 +310,8 @@ DAILY_SETTINGS_UI = {
         ("anomaly_z_threshold", "Unusual z-threshold", 0.5, 5.0, 0.1),
         ("high_anomaly_z_threshold", "High unusual z-threshold", 0.5, 6.0, 0.1),
         ("persistence_days", "Persistence days", 2, 14, 1),
+        ("normal_breach_alert_pct", "Normal breach alert (%)", 0.0, 100.0, 1.0),
+        ("normal_breach_high_alert_pct", "High normal breach alert (%)", 0.0, 100.0, 1.0),
     ],
 }
 
@@ -371,7 +392,7 @@ DAILY_CHARTS = [
         "type": "line",
     },
     {
-        "title": "Distance from personal baseline (percentage points)",
+        "title": "Distance from recent-pattern baseline (percentage points)",
         "cols": [
             "Depression Baseline Difference %",
             "Mania Baseline Difference %",
@@ -382,7 +403,7 @@ DAILY_CHARTS = [
         "type": "line",
     },
     {
-        "title": "Unusual-for-me score (z-score)",
+        "title": "Unusual-for-recent-pattern score (z-score)",
         "cols": [
             "Depression Baseline Z",
             "Mania Baseline Z",
@@ -390,6 +411,16 @@ DAILY_CHARTS = [
             "Mixed Baseline Z",
         ],
         "key": "daily_baseline_z",
+        "type": "line",
+    },
+    {
+        "title": "Normal range breaches (%)",
+        "cols": [
+            "Depression Normal Breach %",
+            "Mania Normal Breach %",
+            "Psychosis Normal Breach %",
+        ],
+        "key": "daily_normal_breaches",
         "type": "line",
     },
     {
@@ -700,11 +731,88 @@ def build_sleeping_pills_flag_series(daily: pd.DataFrame) -> pd.Series:
         return pd.Series(0, index=daily.index, dtype=int)
 
     vals = daily[COL_SLEEPING_PILLS]
-
     if pd.api.types.is_numeric_dtype(vals):
         return (pd.to_numeric(vals, errors="coerce").fillna(0) > 0).astype(int)
 
     return vals.apply(bool_from_response).astype(int)
+
+
+def normal_range_breach_pct(series, low=None, high=None, direction="outside"):
+    if not isinstance(series, pd.Series):
+        series = pd.Series(series)
+
+    s = pd.to_numeric(series, errors="coerce")
+
+    if direction == "low_only":
+        if low is None:
+            return pd.Series(0.0, index=s.index)
+        breach = (low - s).clip(lower=0)
+        return (breach / max(low, 1.0)).clip(upper=1.0) * 100.0
+
+    if direction == "high_only":
+        if high is None:
+            return pd.Series(0.0, index=s.index)
+        breach = (s - high).clip(lower=0)
+        return (breach / max(10.0 - high, 1.0)).clip(upper=1.0) * 100.0
+
+    low_breach = pd.Series(0.0, index=s.index)
+    high_breach = pd.Series(0.0, index=s.index)
+
+    if low is not None:
+        low_breach = ((low - s).clip(lower=0) / max(low, 1.0))
+    if high is not None:
+        high_breach = ((s - high).clip(lower=0) / max(10.0 - high, 1.0))
+
+    return pd.concat([low_breach, high_breach], axis=1).max(axis=1).clip(upper=1.0) * 100.0
+
+
+def add_normal_range_columns(daily: pd.DataFrame) -> pd.DataFrame:
+    working = daily.copy()
+    for col, cfg in NORMAL_RANGES.items():
+        if col in working.columns:
+            working[f"{col} Normal Breach %"] = normal_range_breach_pct(
+                working[col],
+                low=cfg["low"],
+                high=cfg["high"],
+                direction=cfg["direction"],
+            )
+    return working
+
+
+def add_domain_breach_scores(daily: pd.DataFrame) -> pd.DataFrame:
+    working = daily.copy()
+
+    def avg(cols):
+        existing = [c for c in cols if c in working.columns]
+        if not existing:
+            return pd.Series(0.0, index=working.index)
+        return working[existing].mean(axis=1)
+
+    working["Depression Normal Breach %"] = avg([
+        f"{COL_MOOD} Normal Breach %",
+        f"{COL_SLEEP_QUALITY} Normal Breach %",
+        f"{COL_ENERGY} Normal Breach %",
+        f"{COL_MENTAL_SPEED} Normal Breach %",
+        f"{COL_MOTIVATION} Normal Breach %",
+    ])
+
+    working["Mania Normal Breach %"] = avg([
+        f"{COL_SLEEP_HOURS} Normal Breach %",
+        f"{COL_SLEEP_QUALITY} Normal Breach %",
+        f"{COL_ENERGY} Normal Breach %",
+        f"{COL_MENTAL_SPEED} Normal Breach %",
+        f"{COL_IMPULSIVITY} Normal Breach %",
+        f"{COL_IRRITABILITY} Normal Breach %",
+        f"{COL_AGITATION} Normal Breach %",
+    ])
+
+    working["Psychosis Normal Breach %"] = avg([
+        f"{COL_UNUSUAL} Normal Breach %",
+        f"{COL_SUSPICIOUS} Normal Breach %",
+        f"{COL_CERTAINTY} Normal Breach %",
+    ])
+
+    return working
 
 
 # =========================================================
@@ -776,11 +884,14 @@ def render_daily_card(title: str, data: dict):
         st.markdown(f"**Confidence:** :{conf_color}[{data['confidence']}]")
 
         if data.get("baseline_note"):
-            st.markdown(f"**Compared with usual:** {data['baseline_note']}")
+            st.markdown(f"**Compared with recent pattern:** {data['baseline_note']}")
 
         if data.get("baseline_z_text"):
-            with st.expander("Baseline detail"):
+            with st.expander("Recent-pattern baseline detail"):
                 st.write(data["baseline_z_text"])
+
+        if "normal_breach_pct" in data:
+            st.markdown(f"**Outside normal range:** {data['normal_breach_pct']:.1f}%")
 
         reasons = data.get("reasons", [])
         st.markdown("**Main drivers:**")
@@ -1098,10 +1209,7 @@ def build_domain_scores(daily: pd.DataFrame, domain_name: str, config: dict, set
         daily[out_col] = normalize_0_10_to_pct(source_series, inverse=inverse)
 
         if label == "Low Sleep Quality":
-            daily[out_col] = pd.concat(
-                [daily[out_col], sleep_pills_pct],
-                axis=1
-            ).max(axis=1)
+            daily[out_col] = pd.concat([daily[out_col], sleep_pills_pct], axis=1).max(axis=1)
 
         component_pairs.append((out_col, float(settings[weight_key])))
 
@@ -1188,6 +1296,7 @@ def build_domain_summary(df: pd.DataFrame, settings: dict, domains: list[str], i
         dev_col = f"{name} Deviation %"
         z_col = f"{name} Baseline Z"
         baseline_diff_col = f"{name} Baseline Difference %"
+        breach_col = f"{name} Normal Breach %"
 
         score_pct = to_float(latest.get(score_col, 0.0), 0.0)
         dev_pct = to_float(latest.get(dev_col, 0.0), 0.0)
@@ -1197,19 +1306,20 @@ def build_domain_summary(df: pd.DataFrame, settings: dict, domains: list[str], i
 
         z_val = to_float(latest.get(z_col, 0.0), 0.0)
         diff_val = to_float(latest.get(baseline_diff_col, 0.0), 0.0)
+        breach_val = to_float(latest.get(breach_col, 0.0), 0.0)
 
         baseline_note = ""
         baseline_z_text = ""
         if abs(z_val) >= high_anomaly_thr:
             direction = "higher" if diff_val >= 0 else "lower"
-            baseline_note = f"much {direction} than your recent baseline ({diff_val:+.1f} points)"
+            baseline_note = f"much {direction} than your recent pattern ({diff_val:+.1f} points)"
             baseline_z_text = f"z={z_val:+.2f}"
         elif abs(z_val) >= anomaly_thr:
             direction = "higher" if diff_val >= 0 else "lower"
-            baseline_note = f"noticeably {direction} than your recent baseline ({diff_val:+.1f} points)"
+            baseline_note = f"noticeably {direction} than your recent pattern ({diff_val:+.1f} points)"
             baseline_z_text = f"z={z_val:+.2f}"
         elif pd.notna(latest.get(f"{name} Baseline %", pd.NA)):
-            baseline_note = f"close to your recent baseline ({diff_val:+.1f} points)"
+            baseline_note = f"close to your recent pattern ({diff_val:+.1f} points)"
             baseline_z_text = f"z={z_val:+.2f}"
 
         item = {
@@ -1221,6 +1331,7 @@ def build_domain_summary(df: pd.DataFrame, settings: dict, domains: list[str], i
             "baseline_diff_pct": diff_val,
             "baseline_note": baseline_note,
             "baseline_z_text": baseline_z_text,
+            "normal_breach_pct": breach_val,
         }
 
         if include_reasons:
@@ -1305,6 +1416,8 @@ def build_daily_model_from_form(form_df: pd.DataFrame, settings: dict):
     if COL_SLEEPING_PILLS in daily.columns:
         daily[COL_SLEEPING_PILLS] = daily[COL_SLEEPING_PILLS].fillna(0).astype(int)
 
+    daily = add_normal_range_columns(daily)
+
     for domain_name, config in DAILY_DOMAIN_CONFIG.items():
         daily = build_domain_scores(daily, domain_name, config, settings)
 
@@ -1348,6 +1461,7 @@ def build_daily_model_from_form(form_df: pd.DataFrame, settings: dict):
     daily["Self-Reported Mania"] = daily[man_self_cols].sum(axis=1) if man_self_cols else 0
     daily["Self-Reported Mixed"] = daily[mix_self_cols].sum(axis=1) if mix_self_cols else 0
 
+    daily = add_domain_breach_scores(daily)
     daily = add_personal_baselines(daily, settings, DOMAIN_NAMES)
     summary = build_domain_summary(daily, settings, DOMAIN_NAMES, include_reasons=True)
 
@@ -1456,6 +1570,8 @@ def build_alerts(
     anomaly_thr = float(settings.get("anomaly_z_threshold", 1.5))
     high_anomaly_thr = float(settings.get("high_anomaly_z_threshold", 2.5))
     persistence_days = int(settings.get("persistence_days", 3))
+    breach_alert_thr = float(settings.get("normal_breach_alert_pct", 40.0))
+    breach_high_alert_thr = float(settings.get("normal_breach_high_alert_pct", 60.0))
 
     daily_dep_flag_on = to_int(latest.get("Depression Flags", 0)) > 0
     snapshot_dep_flag_on = False
@@ -1478,9 +1594,14 @@ def build_alerts(
 
         z_val = to_float(item.get("baseline_z", 0.0), 0.0)
         diff_val = to_float(item.get("baseline_diff_pct", 0.0), 0.0)
+        breach_val = to_float(item.get("normal_breach_pct", 0.0), 0.0)
+
         if abs(z_val) >= anomaly_thr:
             direction = "above" if diff_val >= 0 else "below"
-            details.append(f"This is {abs(diff_val):.1f} points {direction} your personal baseline (z={z_val:+.2f}).")
+            details.append(f"This is {abs(diff_val):.1f} points {direction} your recent pattern baseline (z={z_val:+.2f}).")
+
+        if breach_val >= breach_alert_thr:
+            details.append(f"Outside your normal range ({breach_val:.0f}% breach).")
 
         if get_domain_persistence(daily_model_data, name, medium_pct, persistence_days):
             details.append(f"This pattern has stayed at or above medium for the last {persistence_days} days.")
@@ -1507,11 +1628,18 @@ def build_alerts(
         elif abs(z_val) >= anomaly_thr and item["score_pct"] >= (medium_pct * 0.8):
             severity = "Monitor"
 
+        if breach_val >= breach_high_alert_thr and item["level"] in ["Medium", "High"]:
+            severity = "High concern"
+        elif breach_val >= breach_alert_thr and severity is None and item["score_pct"] >= (medium_pct * 0.8):
+            severity = "Monitor"
+
         if severity:
             title = f"{name} pattern"
             summary = f"{name} looks {item['level'].lower()} with a {item['trend'].lower()} recent direction."
             if abs(z_val) >= anomaly_thr:
-                summary += " It is also unusual relative to your recent baseline."
+                summary += " It is also unusual relative to your recent pattern."
+            if breach_val >= breach_alert_thr:
+                summary += " It is also outside your normal range."
 
             alerts.append({
                 "severity": severity,
@@ -1574,6 +1702,7 @@ def build_today_summary(daily_summary: dict | None, alerts: list[dict], daily_mo
         key=lambda kv: (
             {"High": 3, "Medium": 2, "Low": 1}.get(kv[1]["level"], 0),
             kv[1]["score_pct"],
+            kv[1].get("normal_breach_pct", 0.0),
             abs(kv[1].get("baseline_z", 0.0)),
         ),
         reverse=True,
@@ -1590,7 +1719,10 @@ def build_today_summary(daily_summary: dict | None, alerts: list[dict], daily_mo
     summary += f" ({primary['score_pct']:.1f}%)."
 
     if primary.get("baseline_note"):
-        summary += f" Compared with your usual pattern, it is {primary['baseline_note']}."
+        summary += f" Compared with your recent pattern, it is {primary['baseline_note']}."
+
+    if primary.get("normal_breach_pct", 0.0) > 0:
+        summary += f" It is outside your normal range by {primary['normal_breach_pct']:.1f}%."
 
     reasons = primary.get("reasons", [])
     if reasons:
@@ -1654,6 +1786,17 @@ def get_latest_form_warning_items(form_df: pd.DataFrame) -> tuple[list[str], lis
 
     if COL_SLEEPING_PILLS in latest.index and bool_from_response(latest.get(COL_SLEEPING_PILLS, "")):
         concerning.append("Took sleeping medication (treat as bad sleep flag)")
+
+    for col, cfg in NORMAL_RANGES.items():
+        if col in latest.index:
+            breach = normal_range_breach_pct(
+                pd.Series([latest[col]]),
+                low=cfg["low"],
+                high=cfg["high"],
+                direction=cfg["direction"],
+            ).iloc[0]
+            if breach > 0:
+                concerning.append(f"{col} is outside your normal range ({breach:.0f}% breach)")
 
     return flagged, concerning
 
@@ -1720,7 +1863,10 @@ def get_model_concerning_findings(
                 daily_findings.append(f"Daily {name.lower()} is {item['level'].lower()} and {item['trend'].lower()}")
 
             if abs(to_float(item.get("baseline_z", 0.0), 0.0)) >= 1.5:
-                daily_findings.append(f"Daily {name.lower()} is unusual relative to your recent baseline")
+                daily_findings.append(f"Daily {name.lower()} is unusual relative to your recent pattern")
+
+            if to_float(item.get("normal_breach_pct", 0.0), 0.0) >= 40:
+                daily_findings.append(f"Daily {name.lower()} is outside your normal range")
 
         latest = daily_model_df.iloc[-1]
         concerning_flags = to_float(latest.get("Concerning Situation Flags", 0), 0.0)
@@ -1836,33 +1982,46 @@ def render_dashboard_page(
     else:
         st.info("No daily trend data available.")
 
-    st.markdown("### Personal baseline")
+    st.markdown("### Recent-pattern baseline")
     if not daily_model_data.empty:
         latest_daily = daily_model_data.iloc[-1]
         b1, b2, b3, b4 = st.columns(4)
 
         with b1:
             st.metric(
-                "Depression vs baseline",
+                "Depression vs recent pattern",
                 f"{to_float(latest_daily.get('Depression Baseline Difference %', 0.0)):+.1f} pp"
             )
         with b2:
             st.metric(
-                "Mania vs baseline",
+                "Mania vs recent pattern",
                 f"{to_float(latest_daily.get('Mania Baseline Difference %', 0.0)):+.1f} pp"
             )
         with b3:
             st.metric(
-                "Psychosis vs baseline",
+                "Psychosis vs recent pattern",
                 f"{to_float(latest_daily.get('Psychosis Baseline Difference %', 0.0)):+.1f} pp"
             )
         with b4:
             st.metric(
-                "Mixed vs baseline",
+                "Mixed vs recent pattern",
                 f"{to_float(latest_daily.get('Mixed Baseline Difference %', 0.0)):+.1f} pp"
             )
     else:
-        st.info("No personal baseline data available.")
+        st.info("No recent-pattern baseline data available.")
+
+    st.markdown("### Normal range overview")
+    if not daily_model_data.empty:
+        latest_daily = daily_model_data.iloc[-1]
+        n1, n2, n3 = st.columns(3)
+        with n1:
+            st.metric("Depression normal breach", f"{to_float(latest_daily.get('Depression Normal Breach %', 0.0)):.1f}%")
+        with n2:
+            st.metric("Mania normal breach", f"{to_float(latest_daily.get('Mania Normal Breach %', 0.0)):.1f}%")
+        with n3:
+            st.metric("Psychosis normal breach", f"{to_float(latest_daily.get('Psychosis Normal Breach %', 0.0)):.1f}%")
+    else:
+        st.info("No normal range overview available.")
 
     st.markdown("### Flags overview")
     if not daily_model_data.empty:
@@ -1966,16 +2125,19 @@ def render_daily_model_page(form_data):
             "Date",
             "Depression Score %",
             "5-Day Average (Depression %)",
+            "Depression Normal Breach %",
             "Depression Baseline %",
             "Depression Baseline Difference %",
             "Depression Baseline Z",
             "Mania Score %",
             "5-Day Average (Mania %)",
+            "Mania Normal Breach %",
             "Mania Baseline %",
             "Mania Baseline Difference %",
             "Mania Baseline Z",
             "Psychosis Score %",
             "5-Day Average (Psychosis %)",
+            "Psychosis Normal Breach %",
             "Psychosis Baseline %",
             "Psychosis Baseline Difference %",
             "Psychosis Baseline Z",
@@ -2070,6 +2232,14 @@ def render_form_data_page(form_data):
             "Suspiciousness",
             "Certainty and belief in unusual ideas or things others don't believe",
             "Took sleeping medication?",
+            "Mood Score Normal Breach %",
+            "Sleep quality Normal Breach %",
+            "Energy Normal Breach %",
+            "Mental speed Normal Breach %",
+            "Motivation Normal Breach %",
+            "Impulsivity Normal Breach %",
+            "Irritability Normal Breach %",
+            "Agitation Normal Breach %",
         ]
         if c in form_data.columns
     ]
