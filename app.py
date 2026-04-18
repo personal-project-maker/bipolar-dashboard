@@ -63,6 +63,9 @@ COLUMN_ALIASES = {
     "Weekly Check-In  Flags":
         "Weekly Check-In Flags",
     "Column 1": "Date",
+
+    # spreadsheet rename support
+    "Positive motivation": "Motivation",
 }
 
 COL_MOOD = "Mood Score"
@@ -72,6 +75,9 @@ COL_ENERGY = "Energy"
 COL_MENTAL_SPEED = "Mental speed"
 COL_IMPULSIVITY = "Impulsivity"
 COL_MOTIVATION = "Motivation"
+COL_IRRITABILITY = "Irritability"
+COL_AGITATION = "Agitation"
+COL_SLEEPING_PILLS = "Took sleeping medication?"
 COL_UNUSUAL = "Unusual perceptions"
 COL_SUSPICIOUS = "Suspiciousness"
 COL_CERTAINTY = "Certainty and belief in unusual ideas or things others don't believe"
@@ -104,12 +110,15 @@ DEFAULT_DAILY_SETTINGS = {
     "dep_low_mental_speed_weight": 1.0,
     "dep_low_motivation_weight": 1.0,
     "dep_flag_weight": 1.0,
+
     "mania_high_mood_weight": 4.0,
     "mania_low_sleep_quality_weight": 1.0,
     "mania_high_energy_weight": 1.0,
     "mania_high_mental_speed_weight": 1.0,
-    "mania_high_motivation_weight": 1.0,
+    "mania_high_irritability_weight": 1.0,
+    "mania_high_agitation_weight": 1.0,
     "mania_flag_weight": 1.0,
+
     "psych_unusual_weight": 1.0,
     "psych_suspicious_weight": 1.0,
     "psych_certainty_weight": 3.0,
@@ -156,12 +165,15 @@ REASON_LABELS = {
     "Depression - Low Mental Speed": "Slower mental speed",
     "Depression - Low Motivation": "Lower motivation",
     "Depression - Flags": "Depression flag",
+
     "Mania - High Mood Score": "Higher mood",
     "Mania - Low Sleep Quality": "Poor sleep / reduced restorative sleep",
     "Mania - High Energy": "Higher energy",
     "Mania - High Mental Speed": "Faster mental speed",
-    "Mania - High Motivation": "Higher drive / motivation",
+    "Mania - High Irritability": "Higher irritability",
+    "Mania - High Agitation": "Higher agitation",
     "Mania - Flags": "Mania-related flags",
+
     "Psychosis - Unusual perceptions": "Unusual perceptions",
     "Psychosis - Suspiciousness": "Suspiciousness",
     "Psychosis - Certainty": "Strong certainty in unusual beliefs",
@@ -191,7 +203,8 @@ DAILY_DOMAIN_CONFIG = {
             ("Low Sleep Quality", COL_SLEEP_QUALITY, True, "mania_low_sleep_quality_weight"),
             ("High Energy", COL_ENERGY, False, "mania_high_energy_weight"),
             ("High Mental Speed", COL_MENTAL_SPEED, False, "mania_high_mental_speed_weight"),
-            ("High Motivation", COL_MOTIVATION, False, "mania_high_motivation_weight"),
+            ("High Irritability", COL_IRRITABILITY, False, "mania_high_irritability_weight"),
+            ("High Agitation", COL_AGITATION, False, "mania_high_agitation_weight"),
         ],
         "flags": [SIG_LESS_SLEEP, SIG_MORE_ACTIVITY, SIG_UP_NOW, SIG_UP_COMING],
         "flag_weight_key": "mania_flag_weight",
@@ -249,7 +262,8 @@ DAILY_SETTINGS_UI = {
         ("mania_low_sleep_quality_weight", "Low sleep quality (mania)", 0.0, 5.0, 0.1),
         ("mania_high_energy_weight", "High energy", 0.0, 5.0, 0.1),
         ("mania_high_mental_speed_weight", "High mental speed", 0.0, 5.0, 0.1),
-        ("mania_high_motivation_weight", "High motivation", 0.0, 5.0, 0.1),
+        ("mania_high_irritability_weight", "High irritability", 0.0, 5.0, 0.1),
+        ("mania_high_agitation_weight", "High agitation", 0.0, 5.0, 0.1),
         ("mania_flag_weight", "Mania flags", 0.0, 5.0, 0.1),
     ],
     "Psychosis weights": [
@@ -407,7 +421,8 @@ DAILY_CHARTS = [
             "Mania - Low Sleep Quality",
             "Mania - High Energy",
             "Mania - High Mental Speed",
-            "Mania - High Motivation",
+            "Mania - High Irritability",
+            "Mania - High Agitation",
             "Mania - Flags",
         ],
         "key": "daily_mania_drivers",
@@ -674,6 +689,18 @@ def find_possible_columns(df: pd.DataFrame, patterns: list[str]) -> list[str]:
         if any(p in col_lower for p in patterns):
             matches.append(original)
     return matches
+
+
+def build_sleeping_pills_flag_series(daily: pd.DataFrame) -> pd.Series:
+    if COL_SLEEPING_PILLS not in daily.columns:
+        return pd.Series(0, index=daily.index, dtype=int)
+
+    vals = daily[COL_SLEEPING_PILLS]
+
+    if pd.api.types.is_numeric_dtype(vals):
+        return (pd.to_numeric(vals, errors="coerce").fillna(0) > 0).astype(int)
+
+    return vals.apply(bool_from_response).astype(int)
 
 
 # =========================================================
@@ -1024,7 +1051,10 @@ def prepare_form_raw(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     working = convert_numeric(df.copy())
-    working = drop_blank_tail_rows(working, ["Timestamp", COL_MOOD, COL_SLEEP_QUALITY, COL_ENERGY])
+    working = drop_blank_tail_rows(
+        working,
+        ["Timestamp", COL_MOOD, COL_SLEEP_QUALITY, COL_ENERGY],
+    )
 
     if "Timestamp" in working.columns:
         working["Timestamp"] = pd.to_datetime(working["Timestamp"], errors="coerce")
@@ -1057,10 +1087,22 @@ def prepare_quick_form_raw(df: pd.DataFrame) -> pd.DataFrame:
 def build_domain_scores(daily: pd.DataFrame, domain_name: str, config: dict, settings: dict):
     component_pairs = []
 
+    sleep_pills_pct = pd.Series(0.0, index=daily.index)
+    if COL_SLEEPING_PILLS in daily.columns:
+        sleep_pills_pct = build_sleeping_pills_flag_series(daily) * 100.0
+
     for label, source_col, inverse, weight_key in config["components"]:
         out_col = f"{domain_name} - {label}"
         source_series = daily[source_col] if source_col in daily.columns else pd.Series(0, index=daily.index)
         daily[out_col] = normalize_0_10_to_pct(source_series, inverse=inverse)
+
+        # taking sleeping pills marks the day as bad sleep
+        if label == "Low Sleep Quality":
+            daily[out_col] = pd.concat(
+                [daily[out_col], sleep_pills_pct],
+                axis=1,
+            ).max(axis=1)
+
         component_pairs.append((out_col, float(settings[weight_key])))
 
     flag_score_col = f"{domain_name} - Flags"
@@ -1194,7 +1236,6 @@ def build_domain_summary(df: pd.DataFrame, settings: dict, domains: list[str], i
                 if value > 0
             ][:4]
 
-        # PATCH 1/3: suppress elevated depression presentation unless flag is on
         if name == "Depression":
             dep_flag_on = to_int(latest.get("Depression Flags", 0)) > 0
             if not dep_flag_on:
@@ -1230,6 +1271,7 @@ def build_daily_model_from_form(form_df: pd.DataFrame, settings: dict):
         c for c in [
             COL_MOOD, COL_SLEEP_HOURS, COL_SLEEP_QUALITY, COL_ENERGY,
             COL_MENTAL_SPEED, COL_IMPULSIVITY, COL_MOTIVATION,
+            COL_IRRITABILITY, COL_AGITATION,
             COL_UNUSUAL, COL_SUSPICIOUS, COL_CERTAINTY
         ]
         if c in working.columns
@@ -1245,15 +1287,28 @@ def build_daily_model_from_form(form_df: pd.DataFrame, settings: dict):
         if signal_columns else pd.DataFrame({"Date": working["Date"].dropna().unique()})
     )
 
+    sleep_med_df = pd.DataFrame({"Date": working["Date"].dropna().unique()})
+    if COL_SLEEPING_PILLS in working.columns:
+        sleep_med_df = (
+            working.groupby("Date", as_index=False)[COL_SLEEPING_PILLS]
+            .agg(lambda s: int(any(bool_from_response(v) for v in s)))
+        )
+
     daily = (
         daily_scores.merge(daily_flags, on="Date", how="outer")
+        .merge(sleep_med_df, on="Date", how="outer")
         .sort_values("Date")
         .reset_index(drop=True)
     )
     daily["DateLabel"] = pd.to_datetime(daily["Date"]).dt.strftime("%Y-%m-%d")
 
+    if COL_SLEEPING_PILLS in daily.columns:
+        daily[COL_SLEEPING_PILLS] = daily[COL_SLEEPING_PILLS].fillna(0).astype(int)
+
     for domain_name, config in DAILY_DOMAIN_CONFIG.items():
         daily = build_domain_scores(daily, domain_name, config, settings)
+
+    daily["Sleeping Pills Flag"] = build_sleeping_pills_flag_series(daily)
 
     mixed_weight_total = (
         float(settings["mixed_dep_weight"])
@@ -1355,7 +1410,6 @@ def build_snapshot_model_from_quick_form(quick_form_df: pd.DataFrame, settings: 
             trend = trend_from_deviation_pct(dev_pct, trend_threshold_pct)
             confidence = confidence_from_count(len(last5), trend, level)
 
-            # keep snapshot depression summary also gated
             if name == "Depression" and to_int(latest.get("Depression Flags", 0)) == 0:
                 level = "Low"
                 trend = "Stable"
@@ -1409,7 +1463,6 @@ def build_alerts(
     for name in DOMAIN_NAMES:
         item = daily_summary[name]
 
-        # PATCH 2/3: suppress depression alerts unless depression flag is on
         if name == "Depression" and not daily_dep_flag_on:
             continue
 
@@ -1570,10 +1623,12 @@ def get_latest_form_warning_items(form_df: pd.DataFrame) -> tuple[list[str], lis
         (COL_MOOD, "Mood score is low"),
         (COL_SLEEP_HOURS, "Sleep hours are low"),
         (COL_SLEEP_QUALITY, "Sleep quality is poor"),
+        (COL_MOTIVATION, "Motivation is low"),
         (COL_ENERGY, "Energy is elevated"),
         (COL_MENTAL_SPEED, "Mental speed is elevated"),
         (COL_IMPULSIVITY, "Impulsivity is elevated"),
-        (COL_MOTIVATION, "Motivation is low"),
+        (COL_IRRITABILITY, "Irritability is elevated"),
+        (COL_AGITATION, "Agitation is elevated"),
         (COL_UNUSUAL, "Unusual perceptions are elevated"),
         (COL_SUSPICIOUS, "Suspiciousness is elevated"),
         (COL_CERTAINTY, "Belief certainty is elevated"),
@@ -1588,8 +1643,15 @@ def get_latest_form_warning_items(form_df: pd.DataFrame) -> tuple[list[str], lis
                 concerning.append(f"{label} ({val:.1f})")
             elif col == COL_SLEEP_QUALITY and val <= 4:
                 concerning.append(f"{label} ({val:.1f})")
-            elif col in [COL_ENERGY, COL_MENTAL_SPEED, COL_IMPULSIVITY, COL_UNUSUAL, COL_SUSPICIOUS, COL_CERTAINTY] and val >= 6:
+            elif col in [
+                COL_ENERGY, COL_MENTAL_SPEED, COL_IMPULSIVITY,
+                COL_IRRITABILITY, COL_AGITATION,
+                COL_UNUSUAL, COL_SUSPICIOUS, COL_CERTAINTY
+            ] and val >= 6:
                 concerning.append(f"{label} ({val:.1f})")
+
+    if COL_SLEEPING_PILLS in latest.index and bool_from_response(latest.get(COL_SLEEPING_PILLS, "")):
+        concerning.append("Took sleeping medication (treat as bad sleep flag)")
 
     return flagged, concerning
 
@@ -1646,7 +1708,6 @@ def get_model_concerning_findings(
     if not snapshot_model_df.empty:
         snapshot_dep_flag_on = to_int(snapshot_model_df.iloc[-1].get("Depression Flags", 0)) > 0
 
-    # PATCH 3/3: suppress depression findings unless the flag is on
     if daily_summary and not daily_model_df.empty:
         for name in DOMAIN_NAMES:
             if name == "Depression" and not daily_dep_flag_on:
@@ -1918,6 +1979,7 @@ def render_daily_model_page(form_data):
             "Mixed Baseline Difference %",
             "Mixed Baseline Z",
             "Concerning Situation Flags",
+            "Sleeping Pills Flag",
             "Depression Flags",
             "Mania Flags",
             "Mixed Flags",
@@ -1996,9 +2058,12 @@ def render_form_data_page(form_data):
             "Mental speed",
             "Impulsivity",
             "Motivation",
+            "Irritability",
+            "Agitation",
             "Unusual perceptions",
             "Suspiciousness",
             "Certainty and belief in unusual ideas or things others don't believe",
+            "Took sleeping medication?",
         ]
         if c in form_data.columns
     ]
