@@ -109,6 +109,14 @@ COLUMN_ALIASES = {
     "Observations [I feel like I'm going to experience an up]": "Signals and indicators [Feel like I'm going to experience an up]",
     "Observations [I feel like I'm going to experience a down]": "Signals and indicators [Feel like I'm going to experience a down]",
     "Observations [I feel like I'm going to experience a mixed]": "Signals and indicators [Feel like I'm going to experience a mixed]",
+
+    # Some exports may omit the "Observations [...]" wrapper
+    "I feel like I'm experiencing an up": "Signals and indicators [Feel like I'm experiencing an up]",
+    "I feel like I'm experiencing a down": "Signals and indicators [Feel like I'm experiencing a down]",
+    "I feel like I'm experiencing a mixed": "Signals and indicators [Feel like I'm experiencing a mixed]",
+    "I feel like I'm going to experience an up": "Signals and indicators [Feel like I'm going to experience an up]",
+    "I feel like I'm going to experience a down": "Signals and indicators [Feel like I'm going to experience a down]",
+    "I feel like I'm going to experience a mixed": "Signals and indicators [Feel like I'm going to experience a mixed]",
 }
 
 COL_MOOD = "Mood Score"
@@ -696,11 +704,11 @@ def normalize_1_5_to_pct(series, inverse: bool = False) -> pd.Series:
     if not isinstance(series, pd.Series):
         series = pd.Series(series)
 
-    s = pd.to_numeric(series, errors="coerce")
-    # 1-5 scale: 1 = lowest intensity/best, 5 = highest intensity/worst
+    s = pd.to_numeric(series, errors="coerce").clip(lower=1, upper=5)
+
     if inverse:
-        return ((5 - (s - 1).clip(lower=0, upper=4)) / 4.0) * 100.0
-    return (((s - 1).clip(lower=0, upper=4)) / 4.0) * 100.0
+        return ((5 - s) / 4.0) * 100.0
+    return ((s - 1) / 4.0) * 100.0
 
 
 def normalize_flag_count_to_pct(series: pd.Series, max_flags: int) -> pd.Series:
@@ -740,7 +748,12 @@ def weighted_average_percent_from_responses(df: pd.DataFrame, col_weight_pairs: 
     return numerator / denominator
 
 
-def weighted_blend_series(primary: pd.Series | None, secondary: pd.Series | None, primary_weight: float, secondary_weight: float) -> pd.Series:
+def weighted_blend_series(
+    primary: pd.Series | None,
+    secondary: pd.Series | None,
+    primary_weight: float,
+    secondary_weight: float,
+) -> pd.Series:
     if primary is None and secondary is None:
         return pd.Series(dtype=float)
 
@@ -1554,11 +1567,10 @@ def build_daily_model_from_form(
     ):
         return pd.DataFrame(), None
 
-    # Legacy daily source
     if form_df.empty or "Timestamp" not in form_df.columns:
-        daily_scores = pd.DataFrame(columns=["Date"])
-        daily_flags = pd.DataFrame(columns=["Date"])
-        sleep_med_df = pd.DataFrame(columns=["Date"])
+        daily_scores = pd.DataFrame({"Date": pd.Series(dtype="object")})
+        daily_flags = pd.DataFrame({"Date": pd.Series(dtype="object")})
+        sleep_med_df = pd.DataFrame({"Date": pd.Series(dtype="object")})
     else:
         working = form_df.copy()
         working = convert_numeric(working)
@@ -1603,7 +1615,6 @@ def build_daily_model_from_form(
         .reset_index(drop=True)
     )
 
-    # Updated daily source
     if updated_daily_df is not None and not updated_daily_df.empty:
         updated_features = build_updated_daily_features(updated_daily_df)
         if not updated_features.empty:
@@ -1618,13 +1629,11 @@ def build_daily_model_from_form(
     if COL_SLEEPING_PILLS in daily.columns:
         daily[COL_SLEEPING_PILLS] = pd.to_numeric(daily[COL_SLEEPING_PILLS], errors="coerce").fillna(0).astype(int)
 
-    # Build legacy model scores first
     for domain_name, config in DAILY_DOMAIN_CONFIG.items():
         daily = build_domain_scores(daily, domain_name, config, settings)
 
     daily["Sleeping Pills Flag"] = build_sleeping_pills_flag_series(daily)
 
-    # Updated daily domain scores
     dep_updated_cols = [
         c for c in [
             "Updated Depression - Low Mood",
@@ -1667,7 +1676,6 @@ def build_daily_model_from_form(
     if psych_updated_cols:
         daily["Updated Psychosis Score %"] = daily[psych_updated_cols].mean(axis=1)
 
-    # Blend legacy + updated model scores
     legacy_weight = float(settings.get("legacy_daily_weight", 0.3))
     updated_weight = float(settings.get("updated_daily_weight", 0.7))
 
@@ -1695,7 +1703,6 @@ def build_daily_model_from_form(
             updated_weight,
         )
 
-    # Recompute rolling averages/deviations after blending
     for name in ["Depression", "Mania", "Psychosis"]:
         score_col = f"{name} Score %"
         avg_col = f"{DAILY_ROLLING_WINDOW_DAYS}-Day Average ({name} %)"
@@ -2112,15 +2119,20 @@ def get_latest_updated_daily_warning_items(updated_daily_df: pd.DataFrame) -> tu
         ("Updated Daily [Work functioning]", "Work functioning is reduced"),
         ("Updated Daily [Daily functioning]", "Daily functioning is reduced"),
     ]:
-        if col in latest.index:
-            val = pd.to_numeric(latest[col], errors="coerce")
-            if pd.isna(val):
-                continue
-            if col == "Updated Daily [Sleep hours]" and val <= 5:
+        if col not in latest.index:
+            continue
+
+        val = pd.to_numeric(latest[col], errors="coerce")
+        if pd.isna(val):
+            continue
+
+        if col == "Updated Daily [Sleep hours]":
+            if val <= 5:
                 concerning.append(f"{label} ({val:.1f})")
-            elif col in ["Updated Daily [Sleep quality]", "Updated Daily [Work functioning]", "Updated Daily [Daily functioning]"] and val <= 2:
+        else:
+            if val <= 2:
                 concerning.append(f"{label} ({val:.1f}/5)")
-            elif col in ["Updated Daily [Sleep quality]", "Updated Daily [Work functioning]", "Updated Daily [Daily functioning]"] and val == 3:
+            elif val == 3:
                 signals.append(f"{label} is somewhat reduced ({val:.1f}/5)")
 
     if COL_SLEEPING_PILLS in latest.index:
