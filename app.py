@@ -1302,7 +1302,7 @@ def build_updated_daily_features(updated_df: pd.DataFrame) -> pd.DataFrame:
 
     working = updated_df.copy()
 
-     mapping = {
+    mapping = {
         "Updated Daily [Low mood]": ("Updated Depression - Low Mood", False),
         "Updated Daily [Low energy]": ("Updated Depression - Low Energy", False),
         "Updated Daily [Low motivation]": ("Updated Depression - Low Motivation", False),
@@ -2116,12 +2116,12 @@ def get_latest_updated_daily_warning_items(updated_daily_df: pd.DataFrame) -> tu
             val = pd.to_numeric(latest[col], errors="coerce")
             if pd.isna(val):
                 continue
-                    if col == "Updated Daily [Sleep hours]" and val <= 5:
-            concerning.append(f"{label} ({val:.1f})")
-        elif col in ["Updated Daily [Sleep quality]", "Updated Daily [Work functioning]", "Updated Daily [Daily functioning]"] and val <= 2:
-            concerning.append(f"{label} ({val:.1f}/5)")
-        elif col in ["Updated Daily [Sleep quality]", "Updated Daily [Work functioning]", "Updated Daily [Daily functioning]"] and val == 3:
-            signals.append(f"{label} is somewhat reduced ({val:.1f}/5)")
+            if col == "Updated Daily [Sleep hours]" and val <= 5:
+                concerning.append(f"{label} ({val:.1f})")
+            elif col in ["Updated Daily [Sleep quality]", "Updated Daily [Work functioning]", "Updated Daily [Daily functioning]"] and val <= 2:
+                concerning.append(f"{label} ({val:.1f}/5)")
+            elif col in ["Updated Daily [Sleep quality]", "Updated Daily [Work functioning]", "Updated Daily [Daily functioning]"] and val == 3:
+                signals.append(f"{label} is somewhat reduced ({val:.1f}/5)")
 
     if COL_SLEEPING_PILLS in latest.index:
         val = latest.get(COL_SLEEPING_PILLS, 0)
