@@ -52,7 +52,6 @@ SHEET_NAME = "Bipolar Dashboard"
 
 FORM_TAB = "Form Responses"
 QUICK_FORM_TAB = "Quick Form Responses"
-UPDATED_DAILY_TAB = "Updated Daily Bipolar Form"
 
 DOMAIN_NAMES = ["Depression", "Mania", "Psychosis", "Mixed"]
 DAILY_ROLLING_WINDOW_DAYS = 5
@@ -66,57 +65,6 @@ COLUMN_ALIASES = {
         "Weekly Check-In Flags",
     "Column 1": "Date",
     "Positive motivation": "Motivation",
-
-    # Updated Daily Bipolar Form mappings
-    "How many hours of sleep did I get?": "Updated Daily [Sleep hours]",
-    "What was my sleep quality?": "Updated Daily [Sleep quality]",
-    "How effectively have I been functioning at work?": "Updated Daily [Work functioning]",
-    "How well have I been functioning in my daily life?": "Updated Daily [Daily functioning]",
-
-    "Have I felt a low mood?": "Updated Daily [Low mood]",
-    "Have I felt slowed down or low on energy?": "Updated Daily [Low energy]",
-    "Have I felt low on motivation or had difficulty initiating tasks?": "Updated Daily [Low motivation]",
-    "Have I felt a lack of interest or pleasure in activities?": "Updated Daily [Low interest]",
-    "Have I been socially or emotionally withdrawn?": "Updated Daily [Withdrawal]",
-    "Have I had ideation around self-harming or suicidal behaviours?": "Updated Daily [Self-harm ideation]",
-
-    "Have I felt an elevated mood?": "Updated Daily [Elevated mood]",
-    "Have I felt sped up or high on energy?": "Updated Daily [High energy]",
-    "Have I felt agitated or restless?": "Updated Daily [Agitation]",
-    "Have I had racing thoughts or speech?": "Updated Daily [Racing thoughts]",
-    "Have I been more irritable and reactive than normal?": "Updated Daily [Irritability]",
-    "Have I had an increased drive towards goal-directed activity or a sense that I must be 'doing things' at all times?":
-        "Updated Daily [Goal-directed activity]",
-
-    "Have I heard or seen things others didn't?": "Updated Daily [Heard or saw things]",
-    "Have I felt watched, followed, targeted or suspicious?": "Updated Daily [Suspiciousness]",
-    "Have I had trouble trusting my perceptions and thoughts?": "Updated Daily [Trouble trusting perceptions]",
-    "How confident have I been in the reality of these experiences?": "Updated Daily [Belief certainty]",
-    "How distressed have I been by these beliefs and experiences?": "Updated Daily [Psychosis distress]",
-    "How would I describe my experiences?": "Updated Daily [Experience description]",
-
-    "I've been feeling \"not like myself\"": 'Signals and indicators [Felt "not like myself"]',
-    "I noticed a sudden mood shift": "Signals and indicators [Noticed a sudden mood shift]",
-    "I missed medication": "Signals and indicators [Missed meds]",
-    "I took sleeping or anti-anxiety medication": "Took sleeping medication?",
-    "There were significant disruptions to my routine": "Signals and indicators [Significant disruption to routine]",
-    "I had a major physiological stress": "Signals and indicators [Major stressor or trigger (physiological)]",
-    "I had a major psychological stress": "Signals and indicators [Major stressor or trigger (psychological)]",
-
-    "Observations [I feel like I'm experiencing an up]": "Signals and indicators [Feel like I'm experiencing an up]",
-    "Observations [I feel like I'm experiencing a down]": "Signals and indicators [Feel like I'm experiencing a down]",
-    "Observations [I feel like I'm experiencing a mixed]": "Signals and indicators [Feel like I'm experiencing a mixed]",
-    "Observations [I feel like I'm going to experience an up]": "Signals and indicators [Feel like I'm going to experience an up]",
-    "Observations [I feel like I'm going to experience a down]": "Signals and indicators [Feel like I'm going to experience a down]",
-    "Observations [I feel like I'm going to experience a mixed]": "Signals and indicators [Feel like I'm going to experience a mixed]",
-
-    # Some exports may omit the "Observations [...]" wrapper
-    "I feel like I'm experiencing an up": "Signals and indicators [Feel like I'm experiencing an up]",
-    "I feel like I'm experiencing a down": "Signals and indicators [Feel like I'm experiencing a down]",
-    "I feel like I'm experiencing a mixed": "Signals and indicators [Feel like I'm experiencing a mixed]",
-    "I feel like I'm going to experience an up": "Signals and indicators [Feel like I'm going to experience an up]",
-    "I feel like I'm going to experience a down": "Signals and indicators [Feel like I'm going to experience a down]",
-    "I feel like I'm going to experience a mixed": "Signals and indicators [Feel like I'm going to experience a mixed]",
 }
 
 COL_MOOD = "Mood Score"
@@ -175,10 +123,6 @@ DEFAULT_DAILY_SETTINGS = {
     "psych_suspicious_weight": 1.0,
     "psych_certainty_weight": 3.0,
     "psych_flag_weight": 1.0,
-
-    "updated_daily_weight": 0.7,
-    "legacy_daily_weight": 0.3,
-
     "mixed_dep_weight": 0.4,
     "mixed_mania_weight": 0.4,
     "mixed_psych_weight": 0.2,
@@ -235,29 +179,6 @@ REASON_LABELS = {
     "Psychosis - Suspiciousness": "Suspiciousness",
     "Psychosis - Certainty": "Strong certainty in unusual beliefs",
     "Psychosis - Flags": "Psychosis-related flags",
-
-    "Updated Depression - Low Mood": "Lower mood",
-    "Updated Depression - Low Energy": "Lower energy",
-    "Updated Depression - Low Motivation": "Lower motivation",
-    "Updated Depression - Low Interest": "Lower interest / pleasure",
-    "Updated Depression - Withdrawal": "Withdrawal",
-    "Updated Depression - Self-Harm": "Self-harm / suicidal ideation",
-    "Updated Work Functioning Impact %": "Reduced work functioning",
-    "Updated Daily Functioning Impact %": "Reduced daily functioning",
-    "Updated Sleep Quality %": "Poor sleep quality",
-
-    "Updated Mania - Elevated Mood": "Elevated mood",
-    "Updated Mania - High Energy": "Higher energy",
-    "Updated Mania - Agitation": "Agitation / restlessness",
-    "Updated Mania - Racing Thoughts": "Racing thoughts / speech",
-    "Updated Mania - Irritability": "Higher irritability",
-    "Updated Mania - Goal Activity": "Driven activity",
-
-    "Updated Psychosis - Perceptions": "Unusual perceptions",
-    "Updated Psychosis - Suspiciousness": "Suspiciousness",
-    "Updated Psychosis - Trust Difficulty": "Trouble trusting perceptions",
-    "Updated Psychosis - Certainty": "Belief certainty",
-    "Updated Psychosis - Distress": "Distress from experiences",
 }
 
 
@@ -354,10 +275,6 @@ DAILY_SETTINGS_UI = {
         ("psych_certainty_weight", "Certainty", 0.0, 5.0, 0.1),
         ("psych_flag_weight", "Psychosis flags", 0.0, 5.0, 0.1),
     ],
-    "Daily source blending": [
-        ("updated_daily_weight", "Updated daily form weight", 0.0, 1.0, 0.05),
-        ("legacy_daily_weight", "Legacy form weight", 0.0, 1.0, 0.05),
-    ],
     "Mixed weights": [
         ("mixed_dep_weight", "Mixed: depression", 0.0, 3.0, 0.05),
         ("mixed_mania_weight", "Mixed: mania", 0.0, 3.0, 0.05),
@@ -412,15 +329,7 @@ SNAPSHOT_SETTINGS_UI = {
 DAILY_CHARTS = [
     {
         "title": "Daily state scores (%)",
-        "cols": [
-            "Depression Score %",
-            "Mania Score %",
-            "Psychosis Score %",
-            "Mixed Score %",
-            "Updated Depression Score %",
-            "Updated Mania Score %",
-            "Updated Psychosis Score %",
-        ],
+        "cols": ["Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %"],
         "key": "daily_state_scores",
         "type": "line",
     },
@@ -504,15 +413,6 @@ DAILY_CHARTS = [
             "Depression - Low Mental Speed",
             "Depression - Low Motivation",
             "Depression - Flags",
-            "Updated Depression - Low Mood",
-            "Updated Depression - Low Energy",
-            "Updated Depression - Low Motivation",
-            "Updated Depression - Low Interest",
-            "Updated Depression - Withdrawal",
-            "Updated Depression - Self-Harm",
-            "Updated Work Functioning Impact %",
-            "Updated Daily Functioning Impact %",
-            "Updated Sleep Quality %",
         ],
         "key": "daily_depression_drivers",
         "type": "line",
@@ -528,13 +428,6 @@ DAILY_CHARTS = [
             "Mania - High Irritability",
             "Mania - High Agitation",
             "Mania - Flags",
-            "Updated Mania - Elevated Mood",
-            "Updated Mania - High Energy",
-            "Updated Mania - Agitation",
-            "Updated Mania - Racing Thoughts",
-            "Updated Mania - Irritability",
-            "Updated Mania - Goal Activity",
-            "Updated Sleep Quality %",
         ],
         "key": "daily_mania_drivers",
         "type": "line",
@@ -546,11 +439,6 @@ DAILY_CHARTS = [
             "Psychosis - Suspiciousness",
             "Psychosis - Certainty",
             "Psychosis - Flags",
-            "Updated Psychosis - Perceptions",
-            "Updated Psychosis - Suspiciousness",
-            "Updated Psychosis - Trust Difficulty",
-            "Updated Psychosis - Certainty",
-            "Updated Psychosis - Distress",
         ],
         "key": "daily_psychosis_drivers",
         "type": "line",
@@ -618,7 +506,7 @@ def convert_numeric(df: pd.DataFrame) -> pd.DataFrame:
 
     working = df.copy()
     for col in working.columns:
-        if col in ["Timestamp", "Date", "Date (int)", "Updated Daily [Experience description]"]:
+        if col in ["Timestamp", "Date", "Date (int)"]:
             continue
         converted = pd.to_numeric(working[col], errors="coerce")
         if converted.notna().any():
@@ -650,7 +538,6 @@ def prettify_signal_name(name: str) -> str:
     return (
         name.replace("Signals and indicators [", "")
         .replace("Symptoms: [", "")
-        .replace("Updated Daily [", "")
         .replace("]", "")
     )
 
@@ -700,17 +587,6 @@ def normalize_0_10_to_pct(series, inverse: bool = False) -> pd.Series:
     return (s.clip(lower=0, upper=10) / 10.0) * 100.0
 
 
-def normalize_1_5_to_pct(series, inverse: bool = False) -> pd.Series:
-    if not isinstance(series, pd.Series):
-        series = pd.Series(series)
-
-    s = pd.to_numeric(series, errors="coerce").clip(lower=1, upper=5)
-
-    if inverse:
-        return ((5 - s) / 4.0) * 100.0
-    return ((s - 1) / 4.0) * 100.0
-
-
 def normalize_flag_count_to_pct(series: pd.Series, max_flags: int) -> pd.Series:
     s = pd.to_numeric(series, errors="coerce").fillna(0)
     if max_flags <= 0:
@@ -746,44 +622,6 @@ def weighted_average_percent_from_responses(df: pd.DataFrame, col_weight_pairs: 
         return pd.Series(0.0, index=df.index, dtype=float)
 
     return numerator / denominator
-
-
-def weighted_blend_series(
-    primary: pd.Series | None,
-    secondary: pd.Series | None,
-    primary_weight: float,
-    secondary_weight: float,
-) -> pd.Series:
-    if primary is None and secondary is None:
-        return pd.Series(dtype=float)
-
-    pieces = []
-    weights = []
-
-    if primary is not None:
-        pieces.append(pd.to_numeric(primary, errors="coerce"))
-        weights.append(max(0.0, float(primary_weight)))
-
-    if secondary is not None:
-        pieces.append(pd.to_numeric(secondary, errors="coerce"))
-        weights.append(max(0.0, float(secondary_weight)))
-
-    if not pieces:
-        return pd.Series(dtype=float)
-
-    if sum(weights) == 0:
-        return pd.concat(pieces, axis=1).mean(axis=1)
-
-    out = pd.Series(0.0, index=pieces[0].index, dtype=float)
-    denom = pd.Series(0.0, index=pieces[0].index, dtype=float)
-
-    for s, w in zip(pieces, weights):
-        valid = s.notna()
-        out.loc[valid] = out.loc[valid] + (s.loc[valid] * w)
-        denom.loc[valid] = denom.loc[valid] + w
-
-    denom = denom.replace(0, pd.NA)
-    return (out / denom).fillna(0.0)
 
 
 def confidence_from_count(count: int, trend: str, level: str) -> str:
@@ -877,45 +715,7 @@ def build_daily_depression_flag_series(daily: pd.DataFrame) -> pd.Series:
     mental_speed_low = pd.to_numeric(daily.get(COL_MENTAL_SPEED, pd.Series(pd.NA, index=daily.index)), errors="coerce") < 4
     motivation_low = pd.to_numeric(daily.get(COL_MOTIVATION, pd.Series(pd.NA, index=daily.index)), errors="coerce") < 4
 
-    legacy_dep_flag = mood_low | (mental_speed_low & motivation_low)
-
-    updated_low_mood = pd.to_numeric(
-        daily.get("Updated Daily [Low mood]", pd.Series(pd.NA, index=daily.index)),
-        errors="coerce",
-    ) >= 3
-    updated_low_energy = pd.to_numeric(
-        daily.get("Updated Daily [Low energy]", pd.Series(pd.NA, index=daily.index)),
-        errors="coerce",
-    ) >= 3
-    updated_low_motivation = pd.to_numeric(
-        daily.get("Updated Daily [Low motivation]", pd.Series(pd.NA, index=daily.index)),
-        errors="coerce",
-    ) >= 3
-    updated_low_interest = pd.to_numeric(
-        daily.get("Updated Daily [Low interest]", pd.Series(pd.NA, index=daily.index)),
-        errors="coerce",
-    ) >= 3
-    updated_withdrawal = pd.to_numeric(
-        daily.get("Updated Daily [Withdrawal]", pd.Series(pd.NA, index=daily.index)),
-        errors="coerce",
-    ) >= 3
-    updated_self_harm = pd.to_numeric(
-        daily.get("Updated Daily [Self-harm ideation]", pd.Series(pd.NA, index=daily.index)),
-        errors="coerce",
-    ) >= 2
-    self_report_down = pd.to_numeric(
-        daily.get(SIG_DOWN_NOW, pd.Series(0, index=daily.index)),
-        errors="coerce",
-    ).fillna(0) > 0
-
-    updated_dep_flag = (
-        updated_self_harm
-        | self_report_down
-        | updated_low_mood
-        | ((updated_low_energy | updated_low_motivation | updated_low_interest | updated_withdrawal) & updated_low_mood)
-    )
-
-    dep_flag = legacy_dep_flag | updated_dep_flag
+    dep_flag = mood_low | (mental_speed_low & motivation_low)
     return dep_flag.fillna(False).astype(int)
 
 
@@ -1176,7 +976,7 @@ def render_chart_group(df, date_col, label_col, chart_defs):
             date_col=date_col,
             label_col=label_col,
             title=chart["title"],
-            default_cols=[c for c in chart["cols"] if c in df.columns],
+            default_cols=chart["cols"],
             key_prefix=chart["key"],
             chart_type=chart["type"],
         )
@@ -1282,101 +1082,9 @@ def prepare_quick_form_raw(df: pd.DataFrame) -> pd.DataFrame:
     return working
 
 
-def prepare_updated_daily_raw(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-
-    working = normalize_columns(df.copy())
-    working = convert_numeric(working)
-    working = drop_blank_tail_rows(working, ["Timestamp"])
-    working["Timestamp"] = pd.to_datetime(working["Timestamp"], errors="coerce", dayfirst=True)
-    working["Date"] = working["Timestamp"].dt.date
-
-    bool_like_cols = [
-        c for c in working.columns
-        if c.startswith("Signals and indicators [") or c == "Took sleeping medication?"
-    ]
-    for col in bool_like_cols:
-        if col in working.columns:
-            if pd.api.types.is_numeric_dtype(working[col]):
-                working[col] = (pd.to_numeric(working[col], errors="coerce").fillna(0) > 0).astype(int)
-            else:
-                working[col] = working[col].apply(bool_from_response).astype(int)
-
-    return working.sort_values("Timestamp").reset_index(drop=True)
-
-
 # =========================================================
 # MODEL HELPERS
 # =========================================================
-def build_updated_daily_features(updated_df: pd.DataFrame) -> pd.DataFrame:
-    if updated_df.empty or "Date" not in updated_df.columns:
-        return pd.DataFrame()
-
-    working = updated_df.copy()
-
-    mapping = {
-        "Updated Daily [Low mood]": ("Updated Depression - Low Mood", False),
-        "Updated Daily [Low energy]": ("Updated Depression - Low Energy", False),
-        "Updated Daily [Low motivation]": ("Updated Depression - Low Motivation", False),
-        "Updated Daily [Low interest]": ("Updated Depression - Low Interest", False),
-        "Updated Daily [Withdrawal]": ("Updated Depression - Withdrawal", False),
-        "Updated Daily [Self-harm ideation]": ("Updated Depression - Self-Harm", False),
-
-        "Updated Daily [Elevated mood]": ("Updated Mania - Elevated Mood", False),
-        "Updated Daily [High energy]": ("Updated Mania - High Energy", False),
-        "Updated Daily [Agitation]": ("Updated Mania - Agitation", False),
-        "Updated Daily [Racing thoughts]": ("Updated Mania - Racing Thoughts", False),
-        "Updated Daily [Irritability]": ("Updated Mania - Irritability", False),
-        "Updated Daily [Goal-directed activity]": ("Updated Mania - Goal Activity", False),
-
-        "Updated Daily [Heard or saw things]": ("Updated Psychosis - Perceptions", False),
-        "Updated Daily [Suspiciousness]": ("Updated Psychosis - Suspiciousness", False),
-        "Updated Daily [Trouble trusting perceptions]": ("Updated Psychosis - Trust Difficulty", False),
-        "Updated Daily [Belief certainty]": ("Updated Psychosis - Certainty", False),
-        "Updated Daily [Psychosis distress]": ("Updated Psychosis - Distress", False),
-
-        "Updated Daily [Sleep quality]": ("Updated Sleep Quality %", True),
-        "Updated Daily [Work functioning]": ("Updated Work Functioning Impact %", True),
-        "Updated Daily [Daily functioning]": ("Updated Daily Functioning Impact %", True),
-    }
-
-    for source_col, (out_col, inverse) in mapping.items():
-        if source_col in working.columns:
-            working[out_col] = normalize_1_5_to_pct(working[source_col], inverse=inverse)
-
-    passthrough_numeric = [c for c in ["Updated Daily [Sleep hours]"] if c in working.columns]
-    score_cols = [c for c in working.columns if c.startswith("Updated ")]
-    signal_cols = [c for c in working.columns if c.startswith("Signals and indicators [")]
-    bool_cols = [c for c in ["Took sleeping medication?"] if c in working.columns]
-
-    parts = []
-
-    if score_cols or passthrough_numeric:
-        parts.append(
-            working.groupby("Date", as_index=False)[score_cols + passthrough_numeric].mean()
-        )
-
-    if signal_cols:
-        parts.append(
-            working.groupby("Date", as_index=False)[signal_cols].max()
-        )
-
-    if bool_cols:
-        parts.append(
-            working.groupby("Date", as_index=False)[bool_cols].max()
-        )
-
-    if not parts:
-        return pd.DataFrame()
-
-    out = parts[0]
-    for part in parts[1:]:
-        out = out.merge(part, on="Date", how="outer")
-
-    return out.sort_values("Date").reset_index(drop=True)
-
-
 def build_domain_scores(daily: pd.DataFrame, domain_name: str, config: dict, settings: dict):
     component_pairs = []
 
@@ -1517,26 +1225,16 @@ def build_domain_summary(df: pd.DataFrame, settings: dict, domains: list[str], i
 
         if include_reasons:
             component_cols = [c for c in df.columns if c.startswith(f"{name} - ")]
-            updated_component_cols = [c for c in df.columns if c.startswith(f"Updated {name} -")]
-            if name == "Depression":
-                extra_cols = [c for c in ["Updated Work Functioning Impact %", "Updated Daily Functioning Impact %", "Updated Sleep Quality %"] if c in df.columns]
-            elif name == "Mania":
-                extra_cols = [c for c in ["Updated Sleep Quality %"] if c in df.columns]
-            else:
-                extra_cols = []
-
-            reason_cols = component_cols + updated_component_cols + extra_cols
-
             raw_reasons = sorted(
-                [(c, to_float(latest.get(c, 0.0))) for c in reason_cols],
+                [(c, to_float(latest.get(c, 0.0))) for c in component_cols],
                 key=lambda x: x[1],
                 reverse=True,
             )
             item["reasons"] = [
-                REASON_LABELS.get(col, col.replace(f"{name} - ", "").replace(f"Updated {name} - ", ""))
+                REASON_LABELS.get(col, col.replace(f"{name} - ", ""))
                 for col, value in raw_reasons
                 if value > 0
-            ][:5]
+            ][:4]
 
         if name == "Depression":
             dep_flag_on = to_int(latest.get("Depression Flags", 0)) > 0
@@ -1556,57 +1254,45 @@ def build_domain_summary(df: pd.DataFrame, settings: dict, domains: list[str], i
 # =========================================================
 # DAILY MODEL
 # =========================================================
-def build_daily_model_from_form(
-    form_df: pd.DataFrame,
-    settings: dict,
-    updated_daily_df: pd.DataFrame | None = None,
-):
-    if (
-        (form_df.empty or "Timestamp" not in form_df.columns)
-        and (updated_daily_df is None or updated_daily_df.empty)
-    ):
+def build_daily_model_from_form(form_df: pd.DataFrame, settings: dict):
+    if form_df.empty or "Timestamp" not in form_df.columns:
         return pd.DataFrame(), None
 
-    if form_df.empty or "Timestamp" not in form_df.columns:
-        daily_scores = pd.DataFrame({"Date": pd.Series(dtype="object")})
-        daily_flags = pd.DataFrame({"Date": pd.Series(dtype="object")})
-        sleep_med_df = pd.DataFrame({"Date": pd.Series(dtype="object")})
-    else:
-        working = form_df.copy()
-        working = convert_numeric(working)
-        working["Timestamp"] = pd.to_datetime(working["Timestamp"], errors="coerce")
-        working["Date"] = working["Timestamp"].dt.date
+    working = form_df.copy()
+    working = convert_numeric(working)
+    working["Timestamp"] = pd.to_datetime(working["Timestamp"], errors="coerce")
+    working["Date"] = working["Timestamp"].dt.date
 
-        signal_columns = [c for c in working.columns if c.startswith("Signals and indicators [")]
-        for col in signal_columns:
-            working[col] = working[col].apply(bool_from_response).astype(int)
+    signal_columns = [c for c in working.columns if c.startswith("Signals and indicators [")]
+    for col in signal_columns:
+        working[col] = working[col].apply(bool_from_response).astype(int)
 
-        numeric_cols = [
-            c for c in [
-                COL_MOOD, COL_SLEEP_HOURS, COL_SLEEP_QUALITY, COL_ENERGY,
-                COL_MENTAL_SPEED, COL_IMPULSIVITY, COL_MOTIVATION,
-                COL_IRRITABILITY, COL_AGITATION,
-                COL_UNUSUAL, COL_SUSPICIOUS, COL_CERTAINTY
-            ]
-            if c in working.columns
+    numeric_cols = [
+        c for c in [
+            COL_MOOD, COL_SLEEP_HOURS, COL_SLEEP_QUALITY, COL_ENERGY,
+            COL_MENTAL_SPEED, COL_IMPULSIVITY, COL_MOTIVATION,
+            COL_IRRITABILITY, COL_AGITATION,
+            COL_UNUSUAL, COL_SUSPICIOUS, COL_CERTAINTY
         ]
+        if c in working.columns
+    ]
 
-        daily_scores = (
-            working.groupby("Date", as_index=False)[numeric_cols].mean()
-            if numeric_cols else pd.DataFrame({"Date": working["Date"].dropna().unique()})
+    daily_scores = (
+        working.groupby("Date", as_index=False)[numeric_cols].mean()
+        if numeric_cols else pd.DataFrame({"Date": working["Date"].dropna().unique()})
+    )
+
+    daily_flags = (
+        working.groupby("Date", as_index=False)[signal_columns].sum()
+        if signal_columns else pd.DataFrame({"Date": working["Date"].dropna().unique()})
+    )
+
+    sleep_med_df = pd.DataFrame({"Date": working["Date"].dropna().unique()})
+    if COL_SLEEPING_PILLS in working.columns:
+        sleep_med_df = (
+            working.groupby("Date", as_index=False)[COL_SLEEPING_PILLS]
+            .agg(lambda s: int(any(bool_from_response(v) for v in s)))
         )
-
-        daily_flags = (
-            working.groupby("Date", as_index=False)[signal_columns].sum()
-            if signal_columns else pd.DataFrame({"Date": working["Date"].dropna().unique()})
-        )
-
-        sleep_med_df = pd.DataFrame({"Date": working["Date"].dropna().unique()})
-        if COL_SLEEPING_PILLS in working.columns:
-            sleep_med_df = (
-                working.groupby("Date", as_index=False)[COL_SLEEPING_PILLS]
-                .agg(lambda s: int(any(bool_from_response(v) for v in s)))
-            )
 
     daily = (
         daily_scores.merge(daily_flags, on="Date", how="outer")
@@ -1614,101 +1300,15 @@ def build_daily_model_from_form(
         .sort_values("Date")
         .reset_index(drop=True)
     )
-
-    if updated_daily_df is not None and not updated_daily_df.empty:
-        updated_features = build_updated_daily_features(updated_daily_df)
-        if not updated_features.empty:
-            daily = daily.merge(updated_features, on="Date", how="outer")
-
-    if daily.empty:
-        return pd.DataFrame(), None
-
-    daily = daily.sort_values("Date").reset_index(drop=True)
     daily["DateLabel"] = pd.to_datetime(daily["Date"]).dt.strftime("%Y-%m-%d")
 
     if COL_SLEEPING_PILLS in daily.columns:
-        daily[COL_SLEEPING_PILLS] = pd.to_numeric(daily[COL_SLEEPING_PILLS], errors="coerce").fillna(0).astype(int)
+        daily[COL_SLEEPING_PILLS] = daily[COL_SLEEPING_PILLS].fillna(0).astype(int)
 
     for domain_name, config in DAILY_DOMAIN_CONFIG.items():
         daily = build_domain_scores(daily, domain_name, config, settings)
 
     daily["Sleeping Pills Flag"] = build_sleeping_pills_flag_series(daily)
-
-    dep_updated_cols = [
-        c for c in [
-            "Updated Depression - Low Mood",
-            "Updated Depression - Low Energy",
-            "Updated Depression - Low Motivation",
-            "Updated Depression - Low Interest",
-            "Updated Depression - Withdrawal",
-            "Updated Depression - Self-Harm",
-            "Updated Work Functioning Impact %",
-            "Updated Daily Functioning Impact %",
-            "Updated Sleep Quality %",
-        ] if c in daily.columns
-    ]
-    if dep_updated_cols:
-        daily["Updated Depression Score %"] = daily[dep_updated_cols].mean(axis=1)
-
-    mania_updated_cols = [
-        c for c in [
-            "Updated Mania - Elevated Mood",
-            "Updated Mania - High Energy",
-            "Updated Mania - Agitation",
-            "Updated Mania - Racing Thoughts",
-            "Updated Mania - Irritability",
-            "Updated Mania - Goal Activity",
-            "Updated Sleep Quality %",
-        ] if c in daily.columns
-    ]
-    if mania_updated_cols:
-        daily["Updated Mania Score %"] = daily[mania_updated_cols].mean(axis=1)
-
-    psych_updated_cols = [
-        c for c in [
-            "Updated Psychosis - Perceptions",
-            "Updated Psychosis - Suspiciousness",
-            "Updated Psychosis - Trust Difficulty",
-            "Updated Psychosis - Certainty",
-            "Updated Psychosis - Distress",
-        ] if c in daily.columns
-    ]
-    if psych_updated_cols:
-        daily["Updated Psychosis Score %"] = daily[psych_updated_cols].mean(axis=1)
-
-    legacy_weight = float(settings.get("legacy_daily_weight", 0.3))
-    updated_weight = float(settings.get("updated_daily_weight", 0.7))
-
-    if "Updated Depression Score %" in daily.columns:
-        daily["Depression Score %"] = weighted_blend_series(
-            daily["Depression Score %"],
-            daily["Updated Depression Score %"],
-            legacy_weight,
-            updated_weight,
-        )
-
-    if "Updated Mania Score %" in daily.columns:
-        daily["Mania Score %"] = weighted_blend_series(
-            daily["Mania Score %"],
-            daily["Updated Mania Score %"],
-            legacy_weight,
-            updated_weight,
-        )
-
-    if "Updated Psychosis Score %" in daily.columns:
-        daily["Psychosis Score %"] = weighted_blend_series(
-            daily["Psychosis Score %"],
-            daily["Updated Psychosis Score %"],
-            legacy_weight,
-            updated_weight,
-        )
-
-    for name in ["Depression", "Mania", "Psychosis"]:
-        score_col = f"{name} Score %"
-        avg_col = f"{DAILY_ROLLING_WINDOW_DAYS}-Day Average ({name} %)"
-        dev_col = f"{name} Deviation %"
-        daily[avg_col] = daily[score_col].rolling(window=DAILY_ROLLING_WINDOW_DAYS, min_periods=1).mean()
-        daily[dev_col] = daily[score_col] - daily[avg_col]
 
     mixed_weight_total = (
         float(settings["mixed_dep_weight"])
@@ -1719,16 +1319,11 @@ def build_daily_model_from_form(
     if mixed_weight_total == 0:
         mixed_weight_total = 1.0
 
-    mixed_sleep_quality_series = daily.get(
-        "Updated Sleep Quality %",
-        daily.get("Depression - Low Sleep Quality", pd.Series(0, index=daily.index))
-    )
-
     daily["Mixed Score %"] = (
         daily["Depression Score %"] * float(settings["mixed_dep_weight"])
         + daily["Mania Score %"] * float(settings["mixed_mania_weight"])
         + daily["Psychosis Score %"] * float(settings["mixed_psych_weight"])
-        + mixed_sleep_quality_series * float(settings["mixed_low_sleep_quality_weight"])
+        + daily.get("Depression - Low Sleep Quality", pd.Series(0, index=daily.index)) * float(settings["mixed_low_sleep_quality_weight"])
     ) / mixed_weight_total
 
     daily[f"{DAILY_ROLLING_WINDOW_DAYS}-Day Average (Mixed %)"] = daily["Mixed Score %"].rolling(
@@ -2063,90 +1658,6 @@ def get_latest_form_warning_items(form_df: pd.DataFrame) -> tuple[list[str], lis
     return flagged, concerning
 
 
-def get_latest_updated_daily_warning_items(updated_daily_df: pd.DataFrame) -> tuple[list[str], list[str]]:
-    if updated_daily_df.empty or "Timestamp" not in updated_daily_df.columns:
-        return [], []
-
-    working = updated_daily_df.copy().sort_values("Timestamp").reset_index(drop=True)
-    latest = working.iloc[-1]
-
-    signals = []
-    concerning = []
-
-    signal_columns = [c for c in working.columns if c.startswith("Signals and indicators [")]
-    for col in signal_columns:
-        val = latest.get(col, 0)
-        try:
-            is_on = bool(int(val))
-        except Exception:
-            is_on = bool_from_response(val)
-        if is_on:
-            signals.append(prettify_signal_name(col))
-
-    score_checks = [
-        ("Updated Daily [Low mood]", "Low mood"),
-        ("Updated Daily [Low energy]", "Low energy"),
-        ("Updated Daily [Low motivation]", "Low motivation"),
-        ("Updated Daily [Low interest]", "Low interest / pleasure"),
-        ("Updated Daily [Withdrawal]", "Withdrawal"),
-        ("Updated Daily [Self-harm ideation]", "Self-harm / suicidal ideation"),
-        ("Updated Daily [Elevated mood]", "Elevated mood"),
-        ("Updated Daily [High energy]", "High energy"),
-        ("Updated Daily [Agitation]", "Agitation"),
-        ("Updated Daily [Racing thoughts]", "Racing thoughts / speech"),
-        ("Updated Daily [Irritability]", "Irritability"),
-        ("Updated Daily [Goal-directed activity]", "Driven activity"),
-        ("Updated Daily [Heard or saw things]", "Unusual perceptions"),
-        ("Updated Daily [Suspiciousness]", "Suspiciousness"),
-        ("Updated Daily [Trouble trusting perceptions]", "Trouble trusting perceptions"),
-        ("Updated Daily [Belief certainty]", "Belief certainty"),
-        ("Updated Daily [Psychosis distress]", "Distress from beliefs / experiences"),
-    ]
-
-    for col, label in score_checks:
-        if col in latest.index:
-            val = pd.to_numeric(latest[col], errors="coerce")
-            if pd.isna(val):
-                continue
-            if val >= 4:
-                concerning.append(f"{label} is high ({val:.1f}/5)")
-            elif val >= 3:
-                signals.append(f"{label} is elevated ({val:.1f}/5)")
-
-    for col, label in [
-        ("Updated Daily [Sleep hours]", "Sleep hours are low"),
-        ("Updated Daily [Sleep quality]", "Sleep quality is poor"),
-        ("Updated Daily [Work functioning]", "Work functioning is reduced"),
-        ("Updated Daily [Daily functioning]", "Daily functioning is reduced"),
-    ]:
-        if col not in latest.index:
-            continue
-
-        val = pd.to_numeric(latest[col], errors="coerce")
-        if pd.isna(val):
-            continue
-
-        if col == "Updated Daily [Sleep hours]":
-            if val <= 5:
-                concerning.append(f"{label} ({val:.1f})")
-        else:
-            if val <= 2:
-                concerning.append(f"{label} ({val:.1f}/5)")
-            elif val == 3:
-                signals.append(f"{label} is somewhat reduced ({val:.1f}/5)")
-
-    if COL_SLEEPING_PILLS in latest.index:
-        val = latest.get(COL_SLEEPING_PILLS, 0)
-        try:
-            is_on = bool(int(val))
-        except Exception:
-            is_on = bool_from_response(val)
-        if is_on:
-            concerning.append("Took sleeping or anti-anxiety medication")
-
-    return signals, concerning
-
-
 def get_latest_quick_form_warning_items(quick_form_df: pd.DataFrame) -> tuple[list[str], list[str]]:
     if quick_form_df.empty or "Timestamp" not in quick_form_df.columns:
         return [], []
@@ -2236,15 +1747,12 @@ def get_model_concerning_findings(
 # =========================================================
 def render_dashboard_page(
     form_data,
-    updated_daily_data,
     quick_form_data,
     daily_model_data,
     daily_model_summary,
     snapshot_model_summary,
     latest_form_signals,
     latest_form_findings,
-    latest_updated_daily_signals,
-    latest_updated_daily_findings,
     latest_snapshot_signals,
     latest_snapshot_findings,
     daily_model_findings,
@@ -2253,7 +1761,7 @@ def render_dashboard_page(
     today_summary,
 ):
     st.subheader("Dashboard")
-    st.caption("Daily Model is calculated from Form Responses plus Updated Daily Bipolar Form with adjustable settings. Snapshot Model is calculated from Quick Form Responses with adjustable settings.")
+    st.caption("Daily Model is calculated from Form Responses with adjustable settings. Snapshot Model is calculated from Quick Form Responses with adjustable settings.")
 
     st.markdown("### Today's interpretation")
     top_alert = alerts[0]["severity"] if alerts else "Monitor"
@@ -2277,20 +1785,13 @@ def render_dashboard_page(
     render_summary_cards(snapshot_model_summary, detailed=False)
 
     st.markdown("### Key warnings")
-    warn_left, warn_mid, warn_right = st.columns(3)
+    warn_left, warn_right = st.columns(2)
 
     with warn_left:
         render_two_column_flag_box(
-            "Legacy daily form",
-            latest_form_findings + latest_form_signals,
-            tone="error" if latest_form_findings else "warning",
-        )
-
-    with warn_mid:
-        render_two_column_flag_box(
-            "Updated daily form / model",
-            latest_updated_daily_findings + daily_model_findings + latest_updated_daily_signals,
-            tone="error" if (latest_updated_daily_findings or daily_model_findings) else "warning",
+            "Daily questionnaire / model",
+            latest_form_findings + daily_model_findings + latest_form_signals,
+            tone="error" if (latest_form_findings or daily_model_findings) else "warning",
         )
 
     with warn_right:
@@ -2328,18 +1829,9 @@ def render_dashboard_page(
             (pd.to_datetime(trend_df["Date"]).dt.date <= max_date)
         ].copy()
 
-        chart_cols = [c for c in [
-            "Depression Score %",
-            "Mania Score %",
-            "Psychosis Score %",
-            "Mixed Score %",
-            "Updated Depression Score %",
-            "Updated Mania Score %",
-            "Updated Psychosis Score %",
-        ] if c in trend_df.columns]
-
         st.line_chart(
-            trend_df[["DateLabel"] + chart_cols].set_index("DateLabel")
+            trend_df[["DateLabel", "Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %"]]
+            .set_index("DateLabel")
         )
     else:
         st.info("No daily trend data available.")
@@ -2391,18 +1883,22 @@ def render_dashboard_page(
     a1, a2, a3, a4 = st.columns(4)
 
     latest_form_time = form_data["Timestamp"].max() if not form_data.empty and "Timestamp" in form_data.columns else None
-    latest_updated_time = updated_daily_data["Timestamp"].max() if not updated_daily_data.empty and "Timestamp" in updated_daily_data.columns else None
     latest_snapshot_time = quick_form_data["Timestamp"].max() if not quick_form_data.empty and "Timestamp" in quick_form_data.columns else None
     days_tracked = len(daily_model_data) if not daily_model_data.empty else 0
 
+    snapshot_last_7 = 0
+    if latest_snapshot_time is not None and not quick_form_data.empty and "Timestamp" in quick_form_data.columns:
+        snap_ts = pd.to_datetime(quick_form_data["Timestamp"], errors="coerce").dropna()
+        snapshot_last_7 = int((snap_ts >= (latest_snapshot_time - pd.Timedelta(days=7))).sum())
+
     with a1:
-        st.metric("Latest legacy form", latest_form_time.strftime("%Y-%m-%d %H:%M") if latest_form_time is not None else "N/A")
+        st.metric("Latest form entry", latest_form_time.strftime("%Y-%m-%d %H:%M") if latest_form_time is not None else "N/A")
     with a2:
-        st.metric("Latest updated daily", latest_updated_time.strftime("%Y-%m-%d %H:%M") if latest_updated_time is not None else "N/A")
+        st.metric("Latest snapshot entry", latest_snapshot_time.strftime("%Y-%m-%d %H:%M") if latest_snapshot_time is not None else "N/A")
     with a3:
-        st.metric("Latest snapshot", latest_snapshot_time.strftime("%Y-%m-%d %H:%M") if latest_snapshot_time is not None else "N/A")
-    with a4:
         st.metric("Days tracked", days_tracked)
+    with a4:
+        st.metric("Snapshot entries (last 7d)", snapshot_last_7)
 
 
 def render_warnings_page(
@@ -2410,8 +1906,6 @@ def render_warnings_page(
     snapshot_model_summary,
     latest_form_signals,
     latest_form_findings,
-    latest_updated_daily_signals,
-    latest_updated_daily_findings,
     latest_snapshot_signals,
     latest_snapshot_findings,
     daily_model_findings,
@@ -2437,24 +1931,20 @@ def render_warnings_page(
     render_summary_cards(snapshot_model_summary, detailed=False)
 
     st.markdown("### Warning Signals and Concerning Findings")
-    left, mid, right = st.columns(3)
+    left, right = st.columns(2)
 
     with left:
-        render_two_column_flag_box("Legacy daily form — warning signals", latest_form_signals, tone="warning")
-        render_two_column_flag_box("Legacy daily form — concerning findings", latest_form_findings, tone="error")
-
-    with mid:
-        render_two_column_flag_box("Updated daily form — warning signals", latest_updated_daily_signals, tone="warning")
-        render_two_column_flag_box("Updated daily form / model — concerning findings", latest_updated_daily_findings + daily_model_findings, tone="error")
+        render_two_column_flag_box("Daily questionnaire — warning signals", latest_form_signals, tone="warning")
+        render_two_column_flag_box("Daily questionnaire — concerning findings", latest_form_findings + daily_model_findings, tone="error")
 
     with right:
         render_two_column_flag_box("Snapshot questionnaire — warning signals", latest_snapshot_signals, tone="warning")
-        render_two_column_flag_box("Snapshot questionnaire / model — concerning findings", latest_snapshot_findings + snapshot_model_findings, tone="error")
+        render_two_column_flag_box("Snapshot questionnaire — concerning findings", latest_snapshot_findings + snapshot_model_findings, tone="error")
 
 
-def render_daily_model_page(form_data, updated_daily_data):
+def render_daily_model_page(form_data):
     st.subheader("Daily Model")
-    st.caption("Calculated from Form Responses plus Updated Daily Bipolar Form with configurable parameters. Scores are shown as percentages.")
+    st.caption("Calculated from Form Responses with configurable parameters. Scores are shown as percentages.")
 
     with st.expander("Daily model settings"):
         render_settings_form("daily_settings", DAILY_SETTINGS_UI, columns_per_row=3)
@@ -2462,7 +1952,6 @@ def render_daily_model_page(form_data, updated_daily_data):
     daily_model_data, daily_model_summary = build_daily_model_from_form(
         form_data,
         st.session_state["daily_settings"],
-        updated_daily_data,
     )
 
     if daily_model_data.empty:
@@ -2476,19 +1965,16 @@ def render_daily_model_page(form_data, updated_daily_data):
         c for c in [
             "Date",
             "Depression Score %",
-            "Updated Depression Score %",
             "5-Day Average (Depression %)",
             "Depression Baseline %",
             "Depression Baseline Difference %",
             "Depression Baseline Z",
             "Mania Score %",
-            "Updated Mania Score %",
             "5-Day Average (Mania %)",
             "Mania Baseline %",
             "Mania Baseline Difference %",
             "Mania Baseline Z",
             "Psychosis Score %",
-            "Updated Psychosis Score %",
             "5-Day Average (Psychosis %)",
             "Psychosis Baseline %",
             "Psychosis Baseline Difference %",
@@ -2498,9 +1984,6 @@ def render_daily_model_page(form_data, updated_daily_data):
             "Mixed Baseline %",
             "Mixed Baseline Difference %",
             "Mixed Baseline Z",
-            "Updated Sleep Quality %",
-            "Updated Work Functioning Impact %",
-            "Updated Daily Functioning Impact %",
             "Concerning Situation Flags",
             "Sleeping Pills Flag",
             "Depression Flags",
@@ -2594,46 +2077,6 @@ def render_form_data_page(form_data):
     render_dataframe_picker("Form Data", form_data, default_form_cols, "form_data_columns")
 
 
-def render_updated_daily_data_page(updated_daily_data):
-    st.subheader("Updated Daily Data")
-    st.caption("Imported directly from Updated Daily Bipolar Form. 1–5 symptom/function scales are blended into the daily model.")
-
-    default_cols = [
-        c for c in [
-            "Timestamp",
-            "Date",
-            "Updated Daily [Sleep hours]",
-            "Updated Daily [Sleep quality]",
-            "Updated Daily [Work functioning]",
-            "Updated Daily [Daily functioning]",
-            "Updated Daily [Low mood]",
-            "Updated Daily [Low energy]",
-            "Updated Daily [Low motivation]",
-            "Updated Daily [Low interest]",
-            "Updated Daily [Withdrawal]",
-            "Updated Daily [Self-harm ideation]",
-            "Updated Daily [Elevated mood]",
-            "Updated Daily [High energy]",
-            "Updated Daily [Agitation]",
-            "Updated Daily [Racing thoughts]",
-            "Updated Daily [Irritability]",
-            "Updated Daily [Goal-directed activity]",
-            "Updated Daily [Heard or saw things]",
-            "Updated Daily [Suspiciousness]",
-            "Updated Daily [Trouble trusting perceptions]",
-            "Updated Daily [Belief certainty]",
-            "Updated Daily [Psychosis distress]",
-            "Took sleeping medication?",
-            SIG_UP_NOW,
-            SIG_DOWN_NOW,
-            SIG_MIXED_NOW,
-        ]
-        if c in updated_daily_data.columns
-    ]
-
-    render_dataframe_picker("Updated Daily Data", updated_daily_data, default_cols, "updated_daily_data_columns")
-
-
 def render_snapshot_data_page(quick_form_data):
     st.subheader("Snapshot Data")
     st.caption("Imported directly from Quick Form Responses. Raw symptom flags are also converted to percentages.")
@@ -2672,16 +2115,13 @@ except Exception as e:
 
 form_df = load_sheet(FORM_TAB)
 quick_form_df = load_sheet(QUICK_FORM_TAB)
-updated_daily_df = load_sheet(UPDATED_DAILY_TAB)
 
 form_data = prepare_form_raw(form_df)
 quick_form_data = prepare_quick_form_raw(quick_form_df)
-updated_daily_data = prepare_updated_daily_raw(updated_daily_df)
 
 daily_model_data, daily_model_summary = build_daily_model_from_form(
     form_data,
     st.session_state["daily_settings"],
-    updated_daily_data,
 )
 
 snapshot_model_summary, snapshot_model_data = build_snapshot_model_from_quick_form(
@@ -2690,9 +2130,7 @@ snapshot_model_summary, snapshot_model_data = build_snapshot_model_from_quick_fo
 )
 
 latest_form_signals, latest_form_findings = get_latest_form_warning_items(form_data)
-latest_updated_daily_signals, latest_updated_daily_findings = get_latest_updated_daily_warning_items(updated_daily_data)
 latest_snapshot_signals, latest_snapshot_findings = get_latest_quick_form_warning_items(quick_form_data)
-
 daily_model_findings, snapshot_model_findings = get_model_concerning_findings(
     daily_model_summary,
     snapshot_model_summary,
@@ -2720,22 +2158,18 @@ tabs = st.tabs([
     "Daily Model",
     "Snapshot Model",
     "Form Data",
-    "Updated Daily Data",
     "Snapshot Data",
 ])
 
 with tabs[0]:
     render_dashboard_page(
         form_data=form_data,
-        updated_daily_data=updated_daily_data,
         quick_form_data=quick_form_data,
         daily_model_data=daily_model_data,
         daily_model_summary=daily_model_summary,
         snapshot_model_summary=snapshot_model_summary,
         latest_form_signals=latest_form_signals,
         latest_form_findings=latest_form_findings,
-        latest_updated_daily_signals=latest_updated_daily_signals,
-        latest_updated_daily_findings=latest_updated_daily_findings,
         latest_snapshot_signals=latest_snapshot_signals,
         latest_snapshot_findings=latest_snapshot_findings,
         daily_model_findings=daily_model_findings,
@@ -2750,8 +2184,6 @@ with tabs[1]:
         snapshot_model_summary=snapshot_model_summary,
         latest_form_signals=latest_form_signals,
         latest_form_findings=latest_form_findings,
-        latest_updated_daily_signals=latest_updated_daily_signals,
-        latest_updated_daily_findings=latest_updated_daily_findings,
         latest_snapshot_signals=latest_snapshot_signals,
         latest_snapshot_findings=latest_snapshot_findings,
         daily_model_findings=daily_model_findings,
@@ -2761,7 +2193,7 @@ with tabs[1]:
     )
 
 with tabs[2]:
-    render_daily_model_page(form_data, updated_daily_data)
+    render_daily_model_page(form_data)
 
 with tabs[3]:
     render_snapshot_model_page(quick_form_data)
@@ -2770,7 +2202,4 @@ with tabs[4]:
     render_form_data_page(form_data)
 
 with tabs[5]:
-    render_updated_daily_data_page(updated_daily_data)
-
-with tabs[6]:
     render_snapshot_data_page(quick_form_data)
