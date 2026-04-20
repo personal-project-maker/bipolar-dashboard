@@ -39,6 +39,7 @@ if not check_password():
 # =========================================================
 SHEET_NAME = "Bipolar Dashboard"
 NEW_FORM_TAB = "Updated Bipolar Form"
+SETTINGS_TAB = "Scoring Settings"
 
 
 @st.cache_resource
@@ -594,7 +595,6 @@ QUESTION_CATALOG = [
 # =========================================================
 # SETTINGS + SCORING CONFIG
 # =========================================================
-SETTINGS_TAB = "Scoring Settings"
 DEFAULT_WEIGHTS = {
     "dep_low_mood": 3.0,
     "dep_slowed_low_energy": 1.5,
@@ -635,6 +635,7 @@ DEFAULT_WEIGHTS = {
     "obs_down_coming": 0.75,
     "obs_mixed_coming": 0.75,
 }
+
 DOMAIN_MAP = {
     "Depression": [
         "dep_low_mood", "dep_slowed_low_energy", "dep_low_motivation",
@@ -680,13 +681,17 @@ def question_catalog_df() -> pd.DataFrame:
     return pd.DataFrame(QUESTION_CATALOG).sort_values("display_order").reset_index(drop=True)
 
 
+def question_catalog_index() -> pd.DataFrame:
+    return question_catalog_df().set_index("question_code")
+
+
 def build_question_lookup() -> dict[str, dict[str, Any]]:
     return {item["question_text"]: item for item in QUESTION_CATALOG}
 
 
 def add_submission_indexing(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df.copy()
+    if df.empty or "Timestamp" not in df.columns:
+        return pd.DataFrame()
 
     working = df.copy()
     working["submitted_at"] = pd.to_datetime(working["Timestamp"], errors="coerce", dayfirst=True)
@@ -725,20 +730,15 @@ def build_submissions_table(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     base_columns = [
-        "submission_id",
-        "submitted_at",
-        "submitted_date",
-        "submission_order_in_day",
-        "snapshot_number_in_day",
-        "is_first_of_day",
+        "submission_id", "submitted_at", "submitted_date",
+        "submission_order_in_day", "snapshot_number_in_day", "is_first_of_day",
     ]
-
     submissions = df[base_columns].copy()
-    if "How would I describe my experiences?" in df.columns:
-        submissions["experience_description"] = df["How would I describe my experiences?"].replace("", pd.NA)
-    else:
-        submissions["experience_description"] = pd.NA
-
+    submissions["experience_description"] = (
+        df["How would I describe my experiences?"].replace("", pd.NA)
+        if "How would I describe my experiences?" in df.columns
+        else pd.NA
+    )
     return submissions
 
 
@@ -788,15 +788,11 @@ def build_submission_wide(df: pd.DataFrame) -> pd.DataFrame:
 
     lookup = build_question_lookup()
     base_columns = [
-        "submission_id",
-        "submitted_at",
-        "submitted_date",
-        "submission_order_in_day",
-        "snapshot_number_in_day",
-        "is_first_of_day",
+        "submission_id", "submitted_at", "submitted_date",
+        "submission_order_in_day", "snapshot_number_in_day", "is_first_of_day",
     ]
-
     wide = df[base_columns].copy()
+
     for question_text, meta in lookup.items():
         if question_text in df.columns:
             wide[meta["question_code"]] = df[question_text]
@@ -808,14 +804,12 @@ def build_daily_model_input(submission_wide: pd.DataFrame) -> pd.DataFrame:
     if submission_wide.empty:
         return pd.DataFrame()
 
-    daily = (
+    return (
         submission_wide[submission_wide["is_first_of_day"]]
         .sort_values("submitted_at")
         .rename(columns={"submission_id": "anchor_submission_id", "submitted_date": "date"})
         .reset_index(drop=True)
     )
-
-    return daily
 
 
 def build_snapshot_model_input(submission_wide: pd.DataFrame) -> pd.DataFrame:
@@ -834,15 +828,12 @@ def build_snapshot_scoring_view(snapshot_model_input: pd.DataFrame) -> pd.DataFr
     if snapshot_model_input.empty:
         return pd.DataFrame()
 
-    catalog = question_catalog_df()
-    scoring_codes = catalog.loc[catalog["used_in_snapshot_scoring"], "question_code"].tolist()
+    scoring_codes = question_catalog_df().loc[
+        question_catalog_df()["used_in_snapshot_scoring"], "question_code"
+    ].tolist()
     base_columns = [
-        "submission_id",
-        "submitted_at",
-        "submitted_date",
-        "snapshot_number_in_day",
-        "is_first_of_day",
-        "minutes_since_first_submission",
+        "submission_id", "submitted_at", "submitted_date",
+        "snapshot_number_in_day", "is_first_of_day", "minutes_since_first_submission",
     ]
     available = [column for column in scoring_codes if column in snapshot_model_input.columns]
     return snapshot_model_input[base_columns + available].copy()
@@ -852,19 +843,18 @@ def build_daily_change_table(daily_model_input: pd.DataFrame) -> pd.DataFrame:
     if daily_model_input.empty:
         return pd.DataFrame()
 
+    exclude = {
+        "date", "anchor_submission_id", "submitted_at",
+        "submission_order_in_day", "snapshot_number_in_day", "is_first_of_day",
+    }
     value_columns = [
-        column
-        for column in daily_model_input.columns
-        if column not in {"date", "anchor_submission_id", "submitted_at", "submission_order_in_day", "snapshot_number_in_day", "is_first_of_day"}
-        and pd.api.types.is_numeric_dtype(daily_model_input[column])
+        column for column in daily_model_input.columns
+        if column not in exclude and pd.api.types.is_numeric_dtype(daily_model_input[column])
     ]
 
-    changes = daily_model_input[["date"] + value_columns].copy()
-    changes = changes.sort_values("date").reset_index(drop=True)
-
+    changes = daily_model_input[["date"] + value_columns].copy().sort_values("date").reset_index(drop=True)
     for column in value_columns:
         changes[f"{column}_delta"] = changes[column].diff()
-
     return changes
 
 
@@ -893,19 +883,19 @@ def load_weights_from_sheet() -> dict[str, float]:
     weights = DEFAULT_WEIGHTS.copy()
     for _, row in df.iterrows():
         code = str(row.get("question_code", "")).strip()
-        if code in weights:
-            parsed = pd.to_numeric(row.get("weight"), errors="coerce")
-            if pd.notna(parsed):
-                weights[code] = float(parsed)
+        parsed = pd.to_numeric(row.get("weight"), errors="coerce")
+        if code in weights and pd.notna(parsed):
+            weights[code] = float(parsed)
+
     return weights
 
 
 def save_weights_to_sheet(weights: dict[str, float]) -> tuple[bool, str]:
     worksheet = safe_get_worksheet(SETTINGS_TAB)
     if worksheet is None:
-        return False, (
-            f"Could not find a worksheet named '{SETTINGS_TAB}', and this service account does not appear to have permission to create one. "
-            "Create that tab manually in the spreadsheet, then saving will work."
+        return (
+            False,
+            f"Worksheet '{SETTINGS_TAB}' was not found. Create it in Google Sheets to persist weight changes.",
         )
 
     rows = [["question_code", "weight"]] + [[code, value] for code, value in weights.items()]
@@ -915,11 +905,16 @@ def save_weights_to_sheet(weights: dict[str, float]) -> tuple[bool, str]:
     return True, "Weights saved."
 
 
-def normalize_series_for_scoring(series: pd.Series, polarity: str, response_type: str, question_code: str) -> pd.Series:
-    s = pd.to_numeric(series, errors="coerce")
-
+def normalize_series_for_scoring(
+    series: pd.Series,
+    polarity: str,
+    response_type: str,
+    question_code: str,
+) -> pd.Series:
     if response_type == "boolean_yes_no":
-        return s.fillna(0).astype(float) * 100.0
+        return series.astype("boolean").fillna(False).astype(int).astype(float) * 100.0
+
+    s = pd.to_numeric(series, errors="coerce")
 
     if question_code == "func_sleep_hours":
         hours = s.astype(float)
@@ -935,9 +930,7 @@ def normalize_series_for_scoring(series: pd.Series, polarity: str, response_type
 
     if response_type == "scale_1_5":
         base = ((s - 1).clip(lower=0, upper=4) / 4.0) * 100.0
-        if polarity == "higher_better":
-            return 100.0 - base
-        return base.fillna(0.0)
+        return (100.0 - base).fillna(0.0) if polarity == "higher_better" else base.fillna(0.0)
 
     return s.fillna(0.0).astype(float)
 
@@ -947,27 +940,25 @@ def build_component_score_frame(submission_wide: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
 
     catalog = question_catalog_df()
-    base = submission_wide[[
-        "submission_id", "submitted_at", "submitted_date",
-        "submission_order_in_day", "snapshot_number_in_day", "is_first_of_day"
-    ]].copy()
+    base = submission_wide[
+        ["submission_id", "submitted_at", "submitted_date", "submission_order_in_day", "snapshot_number_in_day", "is_first_of_day"]
+    ].copy()
 
     for _, question in catalog.iterrows():
         code = question["question_code"]
-        if code not in submission_wide.columns:
-            continue
-        base[code] = normalize_series_for_scoring(
-            submission_wide[code],
-            question["polarity"],
-            question["response_type"],
-            code,
-        )
+        if code in submission_wide.columns:
+            base[code] = normalize_series_for_scoring(
+                submission_wide[code],
+                question["polarity"],
+                question["response_type"],
+                code,
+            )
 
     return base
 
 
 def compute_domain_score(frame: pd.DataFrame, domain_codes: list[str], weights: dict[str, float]) -> pd.Series:
-    available = [code for code in domain_codes if code in frame.columns and weights.get(code, 0) > 0]
+    available = [code for code in domain_codes if code in frame.columns and float(weights.get(code, 0.0)) > 0]
     if not available:
         return pd.Series(0.0, index=frame.index)
 
@@ -984,16 +975,19 @@ def build_scored_snapshot_table(submission_wide: pd.DataFrame, weights: dict[str
     if submission_wide.empty:
         return pd.DataFrame()
 
+    catalog_idx = question_catalog_index()
     scored = build_snapshot_model_input(build_component_score_frame(submission_wide))
+
     for domain, codes in DOMAIN_MAP.items():
-        snapshot_codes = []
-        for code in codes:
-            row = question_catalog_df().loc[question_catalog_df()["question_code"] == code]
-            if row.empty or bool(row.iloc[0]["used_in_snapshot_scoring"]):
-                snapshot_codes.append(code)
+        snapshot_codes = [
+            code for code in codes
+            if code not in catalog_idx.index or bool(catalog_idx.loc[code, "used_in_snapshot_scoring"])
+        ]
         scored[f"{domain} Score %"] = compute_domain_score(scored, snapshot_codes, weights)
 
-    scored["Overall Score %"] = scored[["Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %"]].mean(axis=1)
+    scored["Overall Score %"] = scored[
+        ["Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %"]
+    ].mean(axis=1)
     return scored
 
 
@@ -1003,35 +997,45 @@ def build_scored_daily_table(submission_wide: pd.DataFrame, weights: dict[str, f
 
     component_frame = build_component_score_frame(submission_wide)
     daily = build_daily_model_input(component_frame)
+
     for domain, codes in DOMAIN_MAP.items():
         daily[f"{domain} Score %"] = compute_domain_score(daily, codes, weights)
-    daily["Overall Score %"] = daily[["Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %"]].mean(axis=1)
+
+    daily["Overall Score %"] = daily[
+        ["Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %"]
+    ].mean(axis=1)
+
     for column in ["Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %", "Overall Score %"]:
         daily[f"{column} Delta"] = daily[column].diff()
+
     return daily
 
 
 def build_warnings_table(scored_daily: pd.DataFrame, scored_snapshots: pd.DataFrame) -> pd.DataFrame:
     if scored_daily.empty and scored_snapshots.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(columns=["source", "timestamp", "domain", "severity", "score_pct", "delta", "message"])
 
     warnings = []
+
     if not scored_daily.empty:
         latest_daily = scored_daily.sort_values("date").iloc[-1]
         for domain in ["Depression", "Mania", "Psychosis", "Mixed"]:
             score = float(latest_daily.get(f"{domain} Score %", 0.0))
-            delta = float(latest_daily.get(f"{domain} Score % Delta", 0.0))
+            delta_val = pd.to_numeric(latest_daily.get(f"{domain} Score % Delta"), errors="coerce")
+            delta = float(delta_val) if pd.notna(delta_val) else pd.NA
             severity = "High" if score >= 70 else "Medium" if score >= 45 else None
             if severity:
-                warnings.append({
-                    "source": "Daily Model",
-                    "timestamp": latest_daily.get("submitted_at"),
-                    "domain": domain,
-                    "severity": severity,
-                    "score_pct": round(score, 1),
-                    "delta": round(delta, 1),
-                    "message": f"{domain} daily score is {score:.1f}%",
-                })
+                warnings.append(
+                    {
+                        "source": "Daily Model",
+                        "timestamp": latest_daily.get("submitted_at"),
+                        "domain": domain,
+                        "severity": severity,
+                        "score_pct": round(score, 1),
+                        "delta": round(delta, 1) if pd.notna(delta) else pd.NA,
+                        "message": f"{domain} daily score is {score:.1f}%",
+                    }
+                )
 
     if not scored_snapshots.empty:
         latest_snapshot = scored_snapshots.sort_values("submitted_at").iloc[-1]
@@ -1039,19 +1043,185 @@ def build_warnings_table(scored_daily: pd.DataFrame, scored_snapshots: pd.DataFr
             score = float(latest_snapshot.get(f"{domain} Score %", 0.0))
             severity = "High" if score >= 75 else "Medium" if score >= 50 else None
             if severity:
-                warnings.append({
-                    "source": "Snapshots",
-                    "timestamp": latest_snapshot.get("submitted_at"),
-                    "domain": domain,
-                    "severity": severity,
-                    "score_pct": round(score, 1),
-                    "delta": pd.NA,
-                    "message": f"{domain} latest snapshot score is {score:.1f}%",
-                })
+                warnings.append(
+                    {
+                        "source": "Snapshots",
+                        "timestamp": latest_snapshot.get("submitted_at"),
+                        "domain": domain,
+                        "severity": severity,
+                        "score_pct": round(score, 1),
+                        "delta": pd.NA,
+                        "message": f"{domain} latest snapshot score is {score:.1f}%",
+                    }
+                )
 
-    if not warnings:
+    severity_order = {"High": 2, "Medium": 1}
+    warnings_df = pd.DataFrame(warnings)
+    if warnings_df.empty:
         return pd.DataFrame(columns=["source", "timestamp", "domain", "severity", "score_pct", "delta", "message"])
-    return pd.DataFrame(warnings).sort_values(["severity", "timestamp"], ascending=[False, False]).reset_index(drop=True)
+
+    warnings_df["severity_rank"] = warnings_df["severity"].map(severity_order).fillna(0)
+    warnings_df = warnings_df.sort_values(["severity_rank", "timestamp"], ascending=[False, False]).drop(columns="severity_rank")
+    return warnings_df.reset_index(drop=True)
+
+
+def add_baseline_metrics(scored_daily: pd.DataFrame, window: int = 7) -> pd.DataFrame:
+    if scored_daily.empty:
+        return pd.DataFrame()
+
+    df = scored_daily.sort_values("date").reset_index(drop=True).copy()
+    domains = ["Depression", "Mania", "Psychosis", "Mixed", "Overall"]
+
+    for domain in domains:
+        score_col = f"{domain} Score %"
+        prev = df[score_col].shift(1)
+        baseline = prev.rolling(window=window, min_periods=3).mean()
+        std = prev.rolling(window=window, min_periods=3).std()
+        diff = df[score_col] - baseline
+        safe_std = std.where(std.notna() & (std > 0), 1.0)
+        z = (df[score_col] - baseline) / safe_std
+
+        df[f"{domain} Baseline %"] = baseline
+        df[f"{domain} Baseline Diff"] = diff
+        df[f"{domain} Baseline Z"] = z.where(baseline.notna(), 0.0).fillna(0.0)
+
+    return df
+
+
+def severity_from_score(score: float) -> str:
+    if score >= 75:
+        return "High"
+    if score >= 50:
+        return "Medium"
+    if score >= 25:
+        return "Low"
+    return "Minimal"
+
+
+def normal_range_label(z_value: float) -> str:
+    z = abs(float(z_value))
+    if z >= 2.5:
+        return "Far outside normal"
+    if z >= 1.5:
+        return "Outside normal"
+    if z >= 0.75:
+        return "Slightly outside"
+    return "Within normal"
+
+
+def color_for_level(level: str) -> str:
+    return {
+        "High": "#ef4444",
+        "Medium": "#f59e0b",
+        "Low": "#3b82f6",
+        "Minimal": "#22c55e",
+        "Far outside normal": "#b91c1c",
+        "Outside normal": "#ea580c",
+        "Slightly outside": "#2563eb",
+        "Within normal": "#16a34a",
+    }.get(level, "#64748b")
+
+
+def render_domain_model_cards(latest_row: pd.Series, title: str, timestamp_label: str) -> None:
+    domains = ["Depression", "Mania", "Psychosis", "Mixed"]
+    st.markdown(f"### {title}")
+    st.caption(timestamp_label)
+
+    cols = st.columns(4)
+    for col, domain in zip(cols, domains):
+        score = float(latest_row.get(f"{domain} Score %", 0.0))
+        delta_val = pd.to_numeric(latest_row.get(f"{domain} Score % Delta"), errors="coerce")
+        delta_text = f"{float(delta_val):+.1f}" if pd.notna(delta_val) else "—"
+        z = float(latest_row.get(f"{domain} Baseline Z", 0.0))
+        diff_val = pd.to_numeric(latest_row.get(f"{domain} Baseline Diff"), errors="coerce")
+        diff_text = f"{float(diff_val):+.1f} pts" if pd.notna(diff_val) else "—"
+
+        sev = severity_from_score(score)
+        range_label = normal_range_label(z)
+        sev_color = color_for_level(sev)
+        range_color = color_for_level(range_label)
+
+        with col:
+            st.markdown(
+                f"""
+                <div style="border:1px solid #e5e7eb; border-radius:16px; padding:16px; background:#ffffff; box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+                    <div style="font-size:0.95rem; font-weight:700; margin-bottom:8px;">{domain}</div>
+                    <div style="font-size:1.8rem; font-weight:800; color:{sev_color}; line-height:1;">{score:.1f}%</div>
+                    <div style="margin-top:8px; display:inline-block; padding:4px 10px; border-radius:999px; background:{sev_color}20; color:{sev_color}; font-weight:600; font-size:0.8rem;">{sev}</div>
+                    <div style="margin-top:8px; display:inline-block; padding:4px 10px; border-radius:999px; background:{range_color}20; color:{range_color}; font-weight:600; font-size:0.8rem;">{range_label}</div>
+                    <div style="margin-top:12px; font-size:0.9rem; color:#334155;">Baseline diff: <strong>{diff_text}</strong></div>
+                    <div style="font-size:0.9rem; color:#334155;">Z-score: <strong>{z:+.2f}</strong></div>
+                    <div style="font-size:0.9rem; color:#334155;">Daily change: <strong>{delta_text}</strong></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+def render_component_heatmap(latest_row: pd.Series, title: str) -> None:
+    catalog = question_catalog_df()
+    groups = ["depression", "mania", "psychosis", "mixed", "functioning", "meta"]
+    rows = []
+
+    for group in groups:
+        group_questions = catalog[catalog["group_name"] == group]
+        for _, question in group_questions.iterrows():
+            code = question["question_code"]
+            if code not in latest_row.index:
+                continue
+            value = pd.to_numeric(latest_row.get(code), errors="coerce")
+            if pd.isna(value):
+                continue
+            rows.append(
+                {
+                    "Family": group.title(),
+                    "Component": code,
+                    "Score": float(value),
+                }
+            )
+
+    heat_df = pd.DataFrame(rows)
+    st.markdown(f"### {title}")
+    if heat_df.empty:
+        st.info("No component-level data available.")
+        return
+
+    def score_color(v: float) -> str:
+        if v >= 75:
+            return "background-color: #fee2e2; color: #991b1b;"
+        if v >= 50:
+            return "background-color: #fef3c7; color: #92400e;"
+        if v >= 25:
+            return "background-color: #dbeafe; color: #1d4ed8;"
+        return "background-color: #dcfce7; color: #166534;"
+
+    styled = (
+        heat_df.sort_values(["Family", "Score"], ascending=[True, False])
+        .style.format({"Score": "{:.1f}%"})
+        .map(score_color, subset=["Score"])
+    )
+    st.dataframe(styled, use_container_width=True)
+
+
+def render_normal_range_summary(latest_row: pd.Series) -> None:
+    st.markdown("### Out of normal range summary")
+    domains = ["Depression", "Mania", "Psychosis", "Mixed", "Overall"]
+    rows = []
+
+    for domain in domains:
+        z = float(latest_row.get(f"{domain} Baseline Z", 0.0))
+        diff_val = pd.to_numeric(latest_row.get(f"{domain} Baseline Diff"), errors="coerce")
+        diff = float(diff_val) if pd.notna(diff_val) else 0.0
+        rows.append(
+            {
+                "Family": domain,
+                "Status": normal_range_label(z),
+                "Z-score": z,
+                "Difference vs baseline": diff,
+            }
+        )
+
+    st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
 
 def render_weights_editor(weights: dict[str, float]) -> dict[str, float]:
@@ -1061,12 +1231,13 @@ def render_weights_editor(weights: dict[str, float]) -> dict[str, float]:
         st.caption("Changes are saved to the Google Sheet and persist across refreshes.")
     else:
         st.warning(
-            f"Worksheet '{SETTINGS_TAB}' was not found. Weights are currently using in-memory defaults only. "
-            f"Create a worksheet with that exact name to make changes persist."
+            f"Worksheet '{SETTINGS_TAB}' was not found. Weights are using defaults only until that tab exists."
         )
+
     catalog = question_catalog_df()
     updated = weights.copy()
     groups = ["depression", "mania", "mixed", "psychosis", "functioning", "flags", "observations"]
+
     for group in groups:
         group_df = catalog[catalog["group_name"] == group]
         if group_df.empty:
@@ -1075,28 +1246,25 @@ def render_weights_editor(weights: dict[str, float]) -> dict[str, float]:
             for _, row in group_df.iterrows():
                 code = row["question_code"]
                 updated[code] = st.number_input(
-                    f"{code}",
+                    code,
                     min_value=0.0,
                     max_value=10.0,
                     step=0.25,
                     value=float(updated.get(code, 0.0)),
                     key=f"weight_{code}",
                 )
+
     save_col, reset_col = st.columns(2)
     with save_col:
         if st.button("Save weights", type="primary"):
             ok, message = save_weights_to_sheet(updated)
-            if ok:
-                st.success(message)
-            else:
-                st.error(message)
+            st.success(message) if ok else st.error(message)
+
     with reset_col:
         if st.button("Reset to defaults"):
             ok, message = save_weights_to_sheet(DEFAULT_WEIGHTS.copy())
-            if ok:
-                st.success("Weights reset to defaults.")
-            else:
-                st.error(message)
+            st.success("Weights reset to defaults.") if ok else st.error(message)
+
     return updated
 
 
@@ -1118,7 +1286,6 @@ selected_sheet = st.selectbox(
     index=sheet_names.index(NEW_FORM_TAB) if NEW_FORM_TAB in sheet_names else 0,
 )
 
-weights = load_weights_from_sheet()
 raw_df = load_sheet(selected_sheet)
 indexed_df = add_submission_indexing(raw_df)
 clean_df = clean_submission_values(indexed_df)
@@ -1128,7 +1295,15 @@ submission_wide_df = build_submission_wide(clean_df)
 daily_model_input_df = build_daily_model_input(submission_wide_df)
 snapshot_model_input_df = build_snapshot_model_input(submission_wide_df)
 snapshot_scoring_view_df = build_snapshot_scoring_view(snapshot_model_input_df)
+
+initial_weights = load_weights_from_sheet()
+
+st.subheader("Data model workspace")
+st.write("This page turns the form into a reusable data layer for daily and snapshot models.")
+weights = render_weights_editor(initial_weights)
+
 scored_daily_df = build_scored_daily_table(submission_wide_df, weights)
+scored_daily_df = add_baseline_metrics(scored_daily_df)
 scored_snapshots_df = build_scored_snapshot_table(submission_wide_df, weights)
 daily_change_df = build_daily_change_table(scored_daily_df)
 warnings_df = build_warnings_table(scored_daily_df, scored_snapshots_df)
@@ -1137,11 +1312,6 @@ warnings_df = build_warnings_table(scored_daily_df, scored_snapshots_df)
 # =========================================================
 # APP
 # =========================================================
-st.subheader("Data model workspace")
-st.write("This page turns the form into a reusable data layer for daily and snapshot models.")
-
-weights = render_weights_editor(weights)
-
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("Raw rows", len(raw_df))
 m2.metric("Submissions", len(submissions_df))
@@ -1158,36 +1328,64 @@ st.markdown("- Higher is worse for all other scale items, including `func_sleep_
 with st.expander("Question catalog", expanded=True):
     st.dataframe(question_catalog_df(), use_container_width=True)
 
-with st.expander("Submissions table"):
-    st.dataframe(submissions_df, use_container_width=True)
-
-with st.expander("Answers table"):
-    st.dataframe(answers_df, use_container_width=True)
-
-with st.expander("Submission wide table"):
-    st.dataframe(submission_wide_df, use_container_width=True)
-
 tabs = st.tabs(["Warnings", "Daily Model", "Snapshots", "Data Layer"])
 
 with tabs[0]:
     st.markdown("### Warnings")
+    if not scored_daily_df.empty:
+        latest_daily_row = scored_daily_df.sort_values("date").iloc[-1]
+        render_domain_model_cards(
+            latest_daily_row,
+            "Current family model",
+            f"Based on the first response of {latest_daily_row['date']}",
+        )
+        render_normal_range_summary(latest_daily_row)
+
     st.dataframe(warnings_df, use_container_width=True)
 
 with tabs[1]:
     st.markdown("### Daily Model")
     st.dataframe(scored_daily_df, use_container_width=True)
+
     if not scored_daily_df.empty:
-        chart_df = scored_daily_df[["date", "Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %"]].copy()
+        latest_daily_row = scored_daily_df.sort_values("date").iloc[-1]
+
+        render_domain_model_cards(
+            latest_daily_row,
+            "Daily symptom family model",
+            f"Daily anchor: {latest_daily_row['date']}",
+        )
+
+        chart_df = scored_daily_df[
+            ["date", "Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %"]
+        ].copy()
         st.line_chart(chart_df.set_index("date"))
+
+        render_component_heatmap(latest_daily_row, "Daily component intensity map")
+
         st.markdown("### Daily changes")
         st.dataframe(daily_change_df, use_container_width=True)
 
 with tabs[2]:
     st.markdown("### Snapshots")
     st.dataframe(scored_snapshots_df, use_container_width=True)
+
     if not scored_snapshots_df.empty:
-        chart_df = scored_snapshots_df[["submitted_at", "Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %"]].copy()
+        latest_snapshot_row = scored_snapshots_df.sort_values("submitted_at").iloc[-1]
+
+        render_domain_model_cards(
+            latest_snapshot_row,
+            "Latest snapshot family model",
+            f"Latest snapshot: {pd.to_datetime(latest_snapshot_row['submitted_at']).strftime('%Y-%m-%d %H:%M')}",
+        )
+
+        chart_df = scored_snapshots_df[
+            ["submitted_at", "Depression Score %", "Mania Score %", "Psychosis Score %", "Mixed Score %"]
+        ].copy()
         st.line_chart(chart_df.set_index("submitted_at"))
+
+        render_component_heatmap(latest_snapshot_row, "Snapshot component intensity map")
+
         st.markdown("### Snapshot scoring view")
         st.dataframe(snapshot_scoring_view_df, use_container_width=True)
 
