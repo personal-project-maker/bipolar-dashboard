@@ -3,3 +3,5 @@ st-gsheets-connection
 gspread
 pandas
 google-auth
+numpy
+plotly
