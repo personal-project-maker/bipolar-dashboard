@@ -282,7 +282,7 @@ def _normalise_meta_item(raw_value: Any) -> float:
     v = pd.to_numeric(raw_value, errors="coerce")
     if pd.isna(v):
         return 0.0
-    return float(((v - 1.0) / 4.0 * 100.0).clip(0, 100))
+    return float(min(max((v - 1.0) / 4.0 * 100.0, 0.0), 100.0))
 
 def compute_meta_multiplier(row: pd.Series) -> float:
     """
