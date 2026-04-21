@@ -722,6 +722,12 @@ def make_component_bar(components: pd.DataFrame, domain: str, height: int = 360)
     )
     return fig
 
+def _hex_to_rgba(hex_colour: str, alpha: float = 0.15) -> str:
+    """Convert a #RRGGBB hex string to an rgba(...) string."""
+    h = hex_colour.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
 def make_component_radar(components_by_domain: dict[str, pd.DataFrame], height: int = 420) -> go.Figure:
     """Radar chart overlaying all domains using their top items."""
     fig = go.Figure()
@@ -733,12 +739,12 @@ def make_component_radar(components_by_domain: dict[str, pd.DataFrame], height: 
         values = top["norm_score"].tolist()
         categories += [categories[0]]  # close the polygon
         values     += [values[0]]
-        colour = DOMAIN_COLOURS.get(domain, "#888")
+        colour = DOMAIN_COLOURS.get(domain, "#888888")
         fig.add_trace(go.Scatterpolar(
             r=values, theta=categories, fill="toself", name=domain,
             line=dict(color=colour, width=2),
-            fillcolor=colour.replace("#", "rgba(").replace(")", ",0.1)") if colour.startswith("#") else colour,
-            opacity=0.8,
+            fillcolor=_hex_to_rgba(colour, 0.15),
+            opacity=0.9,
         ))
     fig.update_layout(
         height=height,
