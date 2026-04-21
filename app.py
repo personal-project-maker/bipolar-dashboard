@@ -25,8 +25,8 @@ from typing import Any
 # ──────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ──────────────────────────────────────────────────────────
-st.set_page_config(page_title="Wellbeing Dashboard", layout="wide")
-st.title("Wellbeing Dashboard")
+st.set_page_config(page_title="Bipolar Dashboard", layout="wide")
+st.title("Bipolar Dashboard")
 
 # ──────────────────────────────────────────────────────────
 # AUTHENTICATION
@@ -152,14 +152,20 @@ QUESTION_CATALOG: list[dict[str, Any]] = [
     dict(code="func_sleep_hours",       text="How many hours did I sleep last night?",                                group="functioning",rtype="numeric",   polarity="custom_sleep",  domains=["Depression","Mania","Mixed"], order=450, score_in_snapshot=False),
     dict(code="func_sleep_quality",     text="How poor was my sleep quality last night",                              group="functioning",rtype="scale_1_5", polarity="higher_worse",  domains=["Depression","Mania","Mixed"], order=460, score_in_snapshot=False),
     # META
-    dict(code="meta_unlike_self",             text="Do I feel unlike my usual self?",                                 group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=240),
-    dict(code="meta_something_wrong",         text="Do I think something may be wrong or changing?",                 group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=250),
-    dict(code="meta_concerned",               text="Am I concerned about my current state?",                          group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=260),
-    dict(code="meta_disorganised_thoughts",   text="Do my thoughts feel disorganised or hard to follow?",             group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=270),
-    dict(code="meta_attention_unstable",      text="Is my attention unstable or jumping?",                            group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=280),
-    dict(code="meta_driven_without_thinking", text="Do I feel driven to act without thinking?",                       group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=290),
-    dict(code="meta_intensifying",            text="Is my state intensifying (in any direction)?",                    group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=300),
-    dict(code="meta_towards_episode",         text="Do I feel like I'm moving towards an episode?",                   group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=310),
+    # FORCE MULTIPLIERS — amplify all domain scores post-calculation
+    # meta_role="force_multiplier" flags these for the multiplier pipeline
+    dict(code="meta_unlike_self",             text="Do I feel unlike my usual self?",                                 group="meta", rtype="scale_1_5", polarity="higher_worse", domains=[], order=240, meta_role="force_multiplier"),
+    dict(code="meta_intensifying",            text="Is my state intensifying (in any direction)?",                    group="meta", rtype="scale_1_5", polarity="higher_worse", domains=[], order=300, meta_role="force_multiplier"),
+    dict(code="meta_towards_episode",         text="Do I feel like I'm moving towards an episode?",                   group="meta", rtype="scale_1_5", polarity="higher_worse", domains=[], order=310, meta_role="force_multiplier"),
+    # INSIGHT ITEMS — contribute normally to Dep/Mania/Mixed; INVERSE to Psychosis
+    # (low concern/insight in psychosis = higher risk, not lower)
+    # meta_role="insight_inverse_psychosis" flags these for domain-specific polarity flip
+    dict(code="meta_something_wrong",         text="Do I think something may be wrong or changing?",                  group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Depression","Mania","Mixed","Psychosis"], order=250, meta_role="insight_inverse_psychosis"),
+    dict(code="meta_concerned",               text="Am I concerned about my current state?",                           group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Depression","Mania","Mixed","Psychosis"], order=260, meta_role="insight_inverse_psychosis"),
+    # DIRECT CONTRIBUTORS — added to specific domains at face value
+    dict(code="meta_disorganised_thoughts",   text="Do my thoughts feel disorganised or hard to follow?",              group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Psychosis","Mixed"],             order=270, meta_role="contributor"),
+    dict(code="meta_attention_unstable",      text="Is my attention unstable or jumping?",                             group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Mania","Mixed"],                 order=280, meta_role="contributor"),
+    dict(code="meta_driven_without_thinking", text="Do I feel driven to act without thinking?",                        group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Mania","Mixed"],                 order=290, meta_role="contributor"),
     # FLAGS
     dict(code="flag_not_myself",          text="I've been feeling \"not like myself\"",                               group="flags",      rtype="boolean_yes_no", polarity="higher_worse", domains=["Depression","Mania","Psychosis"],         order=320),
     dict(code="flag_mood_shift",          text="I noticed a sudden mood shift",                                       group="flags",      rtype="boolean_yes_no", polarity="higher_worse", domains=["Depression","Mania","Psychosis","Mixed"],  order=330),
@@ -226,6 +232,12 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "flag_physiological_stress": 1.0, "flag_psychological_stress": 1.0,
     "obs_up_now": 1.0, "obs_down_now": 1.0, "obs_mixed_now": 1.0,
     "obs_up_coming": 0.75, "obs_down_coming": 0.75, "obs_mixed_coming": 0.75,
+    # Meta contributors (force multipliers have no weight here — they act post-scoring)
+    "meta_something_wrong": 1.25,          # insight item — moderate weight in Dep/Mania/Mixed
+    "meta_concerned": 1.0,                 # insight item — lower weight, more reactive
+    "meta_disorganised_thoughts": 1.75,    # strong Psychosis/Mixed contributor
+    "meta_attention_unstable": 1.25,       # Mania/Mixed contributor
+    "meta_driven_without_thinking": 1.5,   # Mania/Mixed contributor — reinforces impulsivity
 }
 
 # ──────────────────────────────────────────────────────────
@@ -246,6 +258,63 @@ def _effective_weight(code: str, domain: str, base_weights: dict[str, float]) ->
     base = base_weights.get(code, 0.0)
     multiplier = DOMAIN_WEIGHT_MULTIPLIERS.get(domain, {}).get(code, 1.0)
     return base * multiplier
+
+# ──────────────────────────────────────────────────────────
+# META QUESTION ROLES
+# ──────────────────────────────────────────────────────────
+# Force multipliers: amplify all domain scores post-calculation.
+# Range: 1.0 (no amplification) to META_MULTIPLIER_MAX (full amplification).
+# The composite of the three items is mapped linearly into this range.
+META_MULTIPLIER_MAX: float = 1.35   # max 35% amplification at full score
+
+FORCE_MULTIPLIER_CODES = [
+    q["code"] for q in QUESTION_CATALOG if q.get("meta_role") == "force_multiplier"
+]
+
+# Insight-inverse items: in Psychosis, LOW concern/insight = HIGHER risk.
+# In all other domains they contribute normally (higher score = worse).
+INSIGHT_INVERSE_CODES = [
+    q["code"] for q in QUESTION_CATALOG if q.get("meta_role") == "insight_inverse_psychosis"
+]
+
+def _normalise_meta_item(raw_value: Any) -> float:
+    """Normalise a single scale_1_5 meta item to 0–100."""
+    v = pd.to_numeric(raw_value, errors="coerce")
+    if pd.isna(v):
+        return 0.0
+    return float(((v - 1.0) / 4.0 * 100.0).clip(0, 100))
+
+def compute_meta_multiplier(row: pd.Series) -> float:
+    """
+    Compute the force-multiplier scalar for one row (submission).
+
+    Takes the mean of the three multiplier items (meta_unlike_self,
+    meta_intensifying, meta_towards_episode), each normalised to 0–100,
+    then maps that average linearly to [1.0, META_MULTIPLIER_MAX].
+
+    Returns a scalar in [1.0, META_MULTIPLIER_MAX].
+    """
+    scores = []
+    for code in FORCE_MULTIPLIER_CODES:
+        if code in row.index:
+            scores.append(_normalise_meta_item(row[code]))
+    if not scores:
+        return 1.0
+    avg = float(np.mean(scores))  # 0–100
+    return 1.0 + (avg / 100.0) * (META_MULTIPLIER_MAX - 1.0)
+
+def _psychosis_insight_score(row: pd.Series) -> float:
+    """
+    For Psychosis only: low concern/insight = higher risk.
+    Inverts the normalised insight item scores (100 - score),
+    then returns the mean as an additive contribution (0–100).
+    """
+    scores = []
+    for code in INSIGHT_INVERSE_CODES:
+        if code in row.index:
+            norm = _normalise_meta_item(row[code])
+            scores.append(100.0 - norm)   # invert: low concern → high score
+    return float(np.mean(scores)) if scores else 0.0
 
 # ──────────────────────────────────────────────────────────
 # RAW DATA PROCESSING
@@ -316,8 +385,18 @@ def _domain_score(frame: pd.DataFrame, domain: str, weights: dict[str, float],
     ]
     if not codes:
         return pd.Series(0.0, index=frame.index)
-    num = sum(frame[c].fillna(0.0) * _effective_weight(c, domain, weights) for c in codes)
-    den = sum(_effective_weight(c, domain, weights) for c in codes)
+
+    num = pd.Series(0.0, index=frame.index)
+    den = 0.0
+    for c in codes:
+        ew = _effective_weight(c, domain, weights)
+        col_vals = frame[c].fillna(0.0)
+        # Insight-inverse items: flip in Psychosis (low concern = higher risk)
+        if domain == "Psychosis" and c in INSIGHT_INVERSE_CODES:
+            col_vals = 100.0 - col_vals
+        num += col_vals * ew
+        den += ew
+
     return num / den if den else pd.Series(0.0, index=frame.index)
 
 def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
@@ -330,6 +409,8 @@ def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
             src["submitted_at"]
             - src.groupby("submitted_date")["submitted_at"].transform("min")
         ).dt.total_seconds() / 60.0
+
+    # Normalise all scoreable questions
     by_code = _catalog_by_code()
     for code, meta in by_code.items():
         if code in src.columns and meta["rtype"] != "text":
@@ -338,15 +419,32 @@ def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
     for code in by_code:
         if f"_n_{code}" in norm_frame.columns:
             norm_frame[code] = norm_frame[f"_n_{code}"]
+
+    # Raw domain scores (pre-multiplier)
     for domain in DOMAINS:
-        src[f"{domain} Score %"] = _domain_score(norm_frame, domain, weights, snapshot=not daily_only)
+        src[f"{domain} Score % (raw)"] = _domain_score(
+            norm_frame, domain, weights, snapshot=not daily_only
+        )
+
+    # Compute force multiplier per row from the three meta items
+    # We use the raw (un-normalised) meta columns from src for this
+    src["meta_multiplier"] = src.apply(compute_meta_multiplier, axis=1)
+
+    # Apply multiplier and cap at 100
+    for domain in DOMAINS:
+        src[f"{domain} Score %"] = (
+            src[f"{domain} Score % (raw)"] * src["meta_multiplier"]
+        ).clip(upper=100.0)
+
     src["Overall Score %"] = src[[f"{d} Score %" for d in DOMAINS]].mean(axis=1)
     src = src.drop(columns=[c for c in src.columns if c.startswith("_n_")])
+
     if daily_only:
         src = src.rename(columns={"submitted_date": "date"})
         for col in [f"{d} Score %" for d in DOMAINS] + ["Overall Score %"]:
             src[f"{col} Delta"] = src[col].diff()
             src[f"{col} 7d Avg"] = src[col].rolling(7, min_periods=1).mean()
+
     return src.reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────
@@ -357,6 +455,7 @@ def get_snapshot_components(row: pd.Series, domain: str, weights: dict[str, floa
     """
     For a single row (snapshot), return each contributing item's
     normalised score (0-100), effective weight, and weighted contribution.
+    Handles psychosis insight inversion and shows pre/post multiplier scores.
     """
     by_code = _catalog_by_code()
     items = [
@@ -369,27 +468,39 @@ def get_snapshot_components(row: pd.Series, domain: str, weights: dict[str, floa
     if not items:
         return pd.DataFrame()
 
+    multiplier = compute_meta_multiplier(row)
     rows = []
     for q in items:
         code = q["code"]
         raw_val = row.get(code)
         norm_score = float(_normalise(pd.Series([raw_val]), q).iloc[0])
+
+        # Flip insight items in Psychosis
+        inverted = domain == "Psychosis" and code in INSIGHT_INVERSE_CODES
+        display_score = 100.0 - norm_score if inverted else norm_score
+
         eff_w = _effective_weight(code, domain, weights)
-        # Short display label
         label = q["text"]
         label = re.sub(r"^(Have I |Do I |Am I |Is my |I've been |I noticed |I |There were |I had a )", "", label)
         label = label[:45] + "…" if len(label) > 45 else label
+        if inverted:
+            label = f"{label} ⟳"   # mark inverted items
+
         rows.append(dict(
             code=code,
             label=label,
-            norm_score=round(norm_score, 1),
+            norm_score=round(display_score, 1),
             weight=round(eff_w, 2),
-            contribution=round(norm_score * eff_w, 1),
+            contribution=round(display_score * eff_w, 1),
             group=q["group"],
+            inverted=inverted,
         ))
+
     df = pd.DataFrame(rows)
     total_w = df["weight"].sum()
     df["weighted_pct"] = (df["weight"] / total_w * 100).round(1) if total_w else 0
+    df["multiplier"] = round(multiplier, 3)
+    df["score_after_multiplier"] = (df["norm_score"] * multiplier).clip(upper=100).round(1)
     return df.sort_values("contribution", ascending=False)
 
 # ──────────────────────────────────────────────────────────
@@ -933,6 +1044,20 @@ def _flag_impact(daily: pd.DataFrame) -> pd.DataFrame:
 
 def _generate_insights(daily, risk, trends, bands, personal, movement_threshold) -> list[dict]:
     insights: list[dict] = []
+
+    # Active multiplier — surface prominently when non-trivial
+    if not daily.empty and "meta_multiplier" in daily.columns:
+        latest_mult = float(daily.sort_values("date").iloc[-1].get("meta_multiplier", 1.0) or 1.0)
+        if latest_mult >= 1.20:
+            insights.append(dict(level="warning", domain="Meta",
+                text=f"**Meta force multiplier is ×{latest_mult:.2f}** — meta questions signal "
+                     f"strong intensification or a sense of approaching episode. "
+                     f"All domain scores are amplified by this factor."))
+        elif latest_mult >= 1.10:
+            insights.append(dict(level="caution", domain="Meta",
+                text=f"**Meta force multiplier is ×{latest_mult:.2f}** — mild amplification "
+                     f"active (intensifying state or feeling unlike yourself)."))
+
     for domain in DOMAINS:
         r    = risk.get(domain, 0)
         t    = trends.get(domain, "stable")
@@ -1154,22 +1279,36 @@ else:
 # DOMAIN STATUS ROW
 if not daily_df.empty:
     latest = daily_df.sort_values("date").iloc[-1]
+    latest_multiplier = float(latest.get("meta_multiplier", 1.0) or 1.0)
+    multiplier_note = (
+        f"  \n⚡ *Meta multiplier: ×{latest_multiplier:.2f}*"
+        if latest_multiplier > 1.05 else ""
+    )
     status_cols = st.columns(len(DOMAINS))
     for i, domain in enumerate(DOMAINS):
-        score = float(latest.get(f"{domain} Score %", 0) or 0)
-        band  = classify_score(score, domain, bands)
-        delta = float(latest.get(f"{domain} Score % Delta", 0) or 0)
-        pb    = personal_bl.get(domain, {})
-        pb_note = ""
+        score     = float(latest.get(f"{domain} Score %", 0) or 0)
+        raw_score = float(latest.get(f"{domain} Score % (raw)", score) or score)
+        band      = classify_score(score, domain, bands)
+        delta     = float(latest.get(f"{domain} Score % Delta", 0) or 0)
+        pb        = personal_bl.get(domain, {})
+        pb_note   = ""
         if pb.get("reliable") and pb.get("mean") is not None:
-            diff = score - pb["mean"]
+            diff    = score - pb["mean"]
             pb_note = f"\n*vs baseline: {diff:+.1f}pp*"
-        streak = _consecutive_days_in_band(daily_df, domain, bands, ["caution","warning","critical"])
+        streak      = _consecutive_days_in_band(daily_df, domain, bands, ["caution","warning","critical"])
         streak_note = f"\n*{streak}d elevated streak*" if streak >= 2 else ""
+        raw_note    = f"\n*raw: {raw_score:.1f}%*" if latest_multiplier > 1.05 else ""
         status_cols[i].markdown(
             f"**{domain}**  \n"
             f"{BAND_EMOJI[band]} **{band.upper()}** — {score:.1f}%  \n"
-            f"Δ {delta:+.1f}pp{pb_note}{streak_note}"
+            f"Δ {delta:+.1f}pp{raw_note}{pb_note}{streak_note}"
+        )
+    if latest_multiplier > 1.05:
+        st.caption(
+            f"⚡ **Meta force multiplier active: ×{latest_multiplier:.2f}** — "
+            f"domain scores are amplified because meta questions signal "
+            f"intensification, approaching episode, or feeling unlike yourself. "
+            f"Raw (pre-multiplier) scores shown in italics above."
         )
 
 st.divider()
@@ -1587,8 +1726,52 @@ with tab_daily:
 with tab_data:
     st.markdown("### Question catalog")
     display_cols = ["code","text","group","rtype","polarity","domains","score_in_snapshot","score_in_daily","order"]
-    st.dataframe(catalog_df()[display_cols], use_container_width=True)
+    cat_display = catalog_df()
+    # Add meta_role column if present
+    if "meta_role" in cat_display.columns:
+        display_cols = ["code","text","group","meta_role","rtype","polarity","domains","order"]
+    st.dataframe(cat_display[[c for c in display_cols if c in cat_display.columns]], use_container_width=True)
 
+    st.divider()
+    st.markdown("### Meta question system")
+    st.caption(
+        "Meta questions operate at two levels: **force multipliers** amplify all domain "
+        "scores after calculation; **contributors** feed directly into domain scores; "
+        "**insight-inverse** items contribute normally to Depression/Mania/Mixed but are "
+        "**inverted in Psychosis** (low concern/insight = higher psychosis risk)."
+    )
+
+    meta_ref = []
+    for q in QUESTION_CATALOG:
+        role = q.get("meta_role")
+        if not role:
+            continue
+        if role == "force_multiplier":
+            description = f"Force multiplier — amplifies all domain scores ×1.0–×{META_MULTIPLIER_MAX}. Not a domain contributor."
+        elif role == "insight_inverse_psychosis":
+            description = "Insight item — contributes normally to Dep/Mania/Mixed. INVERTED in Psychosis (low insight = higher risk)."
+        elif role == "contributor":
+            description = f"Direct contributor to: {', '.join(q.get('domains', []))}"
+        else:
+            description = role
+        meta_ref.append({
+            "Code": q["code"],
+            "Question (short)": q["text"][:60] + ("…" if len(q["text"]) > 60 else ""),
+            "Role": role,
+            "Domains": ", ".join(q.get("domains", [])) or "—",
+            "Description": description,
+        })
+    st.dataframe(pd.DataFrame(meta_ref), use_container_width=True, hide_index=True)
+
+    st.caption(
+        f"**Multiplier formula:** composite of {', '.join(FORCE_MULTIPLIER_CODES)} "
+        f"→ mean normalised score (0–100) → mapped to ×1.0–×{META_MULTIPLIER_MAX}. "
+        f"A score of 50/100 on all three items → multiplier of "
+        f"×{1.0 + 0.5 * (META_MULTIPLIER_MAX - 1.0):.2f}. "
+        f"All domain scores capped at 100 after multiplication."
+    )
+
+    st.divider()
     st.markdown("### Sleep weight multipliers by domain")
     mlt_rows = []
     for domain in DOMAINS:
