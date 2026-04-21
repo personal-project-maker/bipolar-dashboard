@@ -1,15 +1,18 @@
 """
-Wellbeing Dashboard — full featured build.
+Bipolar Dashboard — full featured build.
 
-New in this version:
-  • Notes journal: searchable, colour-coded by day's band status, with keyword extraction
-  • Graph filters: date range + domain selector applied across all charts
-  • 7-day rolling average overlay on all domain charts
-  • Snapshot component charts: radar + bar breakdown of what's driving each domain score
-  • Domain-specific sleep weight overrides: sleep deprioritised in Depression,
-    kept significant in Mania and Mixed
-  • Snapshot timeline with per-day submission count
-  • Improved insights: consecutive-day streak detection in elevated bands
+Features:
+  • Baseline band system with personal baseline (episode periods excluded)
+  • Meta question force multipliers + insight-inverse items for Psychosis
+  • Domain-specific sleep weight overrides
+  • Episode labelling with chart overlays and pre-episode score context
+  • Medication notes from form field, shown in journal and on charts
+  • Clinician export: structured 30-day summary (copyable markdown)
+  • Journal: searchable, colour-coded by band, keyword extraction
+  • Snapshot component charts: radar + bar breakdown per domain
+  • Global date/domain filters with 7-day rolling average toggle
+  • Refresh button + last-updated timestamp in sidebar
+  • Consecutive-day streak detection and movement alerts
 """
 
 import streamlit as st
@@ -53,6 +56,7 @@ SHEET_NAME   = "Bipolar Dashboard"
 NEW_FORM_TAB = "Updated Bipolar Form"
 SETTINGS_TAB = "Scoring Settings"
 BASELINE_TAB = "Baseline Settings"
+EPISODE_TAB  = "Episode Log"
 
 @st.cache_resource
 def _gspread_client() -> gspread.Client:
@@ -182,7 +186,8 @@ QUESTION_CATALOG: list[dict[str, Any]] = [
     dict(code="obs_down_coming", text="Observations [I feel like I'm going to experience a down]",   group="observations", rtype="boolean_yes_no", polarity="higher_worse", domains=["Depression"],        order=430),
     dict(code="obs_mixed_coming",text="Observations [I feel like I'm going to experience a mixed]",  group="observations", rtype="boolean_yes_no", polarity="higher_worse", domains=["Psychosis","Mixed"], order=440),
     # NOTES
-    dict(code="experience_description", text="How would I describe my experiences?", group="notes", rtype="text", polarity="not_applicable", domains=[], order=470),
+    dict(code="experience_description", text="How would I describe my experiences?",                    group="notes", rtype="text", polarity="not_applicable", domains=[], order=470),
+    dict(code="medication_notes",       text="Have there been any medication changes? If so, what?",    group="notes", rtype="text", polarity="not_applicable", domains=[], order=480),
 ]
 
 for _q in QUESTION_CATALOG:
@@ -563,6 +568,7 @@ def compute_personal_baseline(
     daily: pd.DataFrame,
     bands: dict[str, dict[str, float]],
     window_days: int = 90,
+    episodes: pd.DataFrame | None = None,
 ) -> dict[str, dict]:
     empty = dict(mean=None, sd=None, n=0, lower=None, upper=None, reliable=False)
     if daily.empty:
@@ -573,6 +579,19 @@ def compute_personal_baseline(
         if col in daily.columns:
             ceiling = bands.get(domain, {}).get("well", 20.0)
             mask &= daily[col].fillna(999) <= ceiling
+
+    # Exclude days that fall within labelled episodes
+    if episodes is not None and not episodes.empty:
+        ep_mask = pd.Series(False, index=daily.index)
+        for _, ep in episodes.iterrows():
+            try:
+                ep_start = pd.Timestamp(ep["start_date"]).date()
+                ep_end   = pd.Timestamp(ep["end_date"]).date()
+                ep_mask |= (daily["date"] >= ep_start) & (daily["date"] <= ep_end)
+            except Exception:
+                pass
+        mask &= ~ep_mask
+
     well_days = daily[mask].sort_values("date").tail(window_days)
     result: dict[str, dict] = {}
     for domain in DOMAINS:
@@ -687,6 +706,8 @@ def make_band_chart(
     personal: dict | None = None,
     movement_threshold: float = DEFAULT_MOVEMENT_THRESHOLD,
     show_rolling: bool = True,
+    episodes: pd.DataFrame | None = None,
+    med_notes: pd.DataFrame | None = None,
     height: int = 320,
 ) -> go.Figure:
     col = f"{domain} Score %"
@@ -765,6 +786,23 @@ def make_band_chart(
                         line=dict(color="white", width=1)),
             hovertemplate="%{x}<br>%{y:.1f}% — notable movement<extra></extra>",
         ))
+
+    # Episode overlays
+    if episodes is not None and not episodes.empty:
+        fig = add_episode_overlays(fig, episodes)
+
+    # Medication change markers
+    if med_notes is not None and not med_notes.empty:
+        for _, m in med_notes.iterrows():
+            note_text = str(m.get("medication_notes",""))[:40]
+            fig.add_vline(
+                x=str(m["date"]),
+                line_dash="dash", line_color="rgba(0,150,100,0.6)", line_width=1.5,
+                annotation_text=f"💊 {note_text}",
+                annotation_position="top",
+                annotation_font_size=8,
+                annotation_font_color="rgba(0,150,100,1)",
+            )
 
     fig.update_layout(
         height=height, margin=dict(l=10, r=90, t=30, b=10),
@@ -1042,6 +1080,266 @@ def _flag_impact(daily: pd.DataFrame) -> pd.DataFrame:
     df["impact"] = df["mean_when_flagged"] - df["mean_when_not_flagged"]
     return df.sort_values("impact", ascending=False).reset_index(drop=True)
 
+# ──────────────────────────────────────────────────────────
+# EPISODE LOG
+# ──────────────────────────────────────────────────────────
+EPISODE_TYPES  = ["Depressive", "Hypomanic", "Manic", "Mixed", "Psychotic", "Other"]
+EPISODE_COLOURS = {
+    "Depressive": _hex_to_rgba("#FF3B30", 0.15),
+    "Hypomanic":  _hex_to_rgba("#FF9500", 0.12),
+    "Manic":      _hex_to_rgba("#FF9500", 0.20),
+    "Mixed":      _hex_to_rgba("#1C7EF2", 0.15),
+    "Psychotic":  _hex_to_rgba("#AF52DE", 0.15),
+    "Other":      _hex_to_rgba("#8E8E93", 0.12),
+}
+EPISODE_LINE_COLOURS = {
+    "Depressive": "#FF3B30", "Hypomanic": "#FF9500", "Manic": "#FF9500",
+    "Mixed": "#1C7EF2", "Psychotic": "#AF52DE", "Other": "#8E8E93",
+}
+
+@st.cache_data(ttl=30)
+def load_episodes() -> pd.DataFrame:
+    """Load episode log from Google Sheet. Returns DataFrame with columns:
+    episode_id, episode_type, start_date, end_date, notes."""
+    ws = safe_worksheet(EPISODE_TAB)
+    if ws is None:
+        return pd.DataFrame(columns=["episode_id","episode_type","start_date","end_date","notes"])
+    try:
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return pd.DataFrame(columns=["episode_id","episode_type","start_date","end_date","notes"])
+        df = pd.DataFrame(values[1:], columns=values[0])
+        df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce").dt.date
+        df["end_date"]   = pd.to_datetime(df["end_date"],   errors="coerce").dt.date
+        return df.dropna(subset=["start_date","end_date"]).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=["episode_id","episode_type","start_date","end_date","notes"])
+
+def _save_episodes(episodes: pd.DataFrame) -> tuple[bool, str]:
+    ws = safe_worksheet(EPISODE_TAB)
+    if ws is None:
+        return False, (
+            f"Worksheet '{EPISODE_TAB}' not found. "
+            "Create a tab with that exact name in your Google Sheet, then try again."
+        )
+    rows = [["episode_id","episode_type","start_date","end_date","notes"]]
+    for _, row in episodes.iterrows():
+        rows.append([
+            str(row.get("episode_id","")),
+            str(row.get("episode_type","")),
+            str(row.get("start_date","")),
+            str(row.get("end_date","")),
+            str(row.get("notes","")),
+        ])
+    ws.clear()
+    ws.update("A1", rows)
+    load_episodes.clear()
+    return True, "Episode log saved."
+
+def add_episode(episode_type: str, start_date, end_date, notes: str) -> tuple[bool, str]:
+    import datetime, hashlib
+    episodes = load_episodes()
+    episode_id = hashlib.md5(
+        f"{episode_type}{start_date}{end_date}{notes}".encode()
+    ).hexdigest()[:8]
+    new_row = pd.DataFrame([{
+        "episode_id": episode_id,
+        "episode_type": episode_type,
+        "start_date": start_date,
+        "end_date": end_date,
+        "notes": notes,
+    }])
+    updated = pd.concat([episodes, new_row], ignore_index=True)
+    return _save_episodes(updated)
+
+def delete_episode(episode_id: str) -> tuple[bool, str]:
+    episodes = load_episodes()
+    updated = episodes[episodes["episode_id"] != episode_id].reset_index(drop=True)
+    return _save_episodes(updated)
+
+def add_episode_overlays(fig: go.Figure, episodes: pd.DataFrame,
+                         x_is_date: bool = True) -> go.Figure:
+    """Add shaded episode regions and start/end markers to any Plotly figure."""
+    if episodes.empty:
+        return fig
+    for _, ep in episodes.iterrows():
+        ep_type = str(ep.get("episode_type", "Other"))
+        x0 = str(ep["start_date"])
+        x1 = str(ep["end_date"])
+        colour = EPISODE_COLOURS.get(ep_type, EPISODE_COLOURS["Other"])
+        line_c = EPISODE_LINE_COLOURS.get(ep_type, "#8E8E93")
+        notes  = str(ep.get("notes",""))
+        label  = ep_type + (f": {notes[:30]}…" if len(notes) > 30 else (f": {notes}" if notes else ""))
+        fig.add_vrect(
+            x0=x0, x1=x1,
+            fillcolor=colour, line_width=1,
+            line_color=line_c,
+            annotation_text=label,
+            annotation_position="top left",
+            annotation_font_size=9,
+            annotation_font_color=line_c,
+        )
+    return fig
+
+# ──────────────────────────────────────────────────────────
+# MEDICATION NOTES
+# ──────────────────────────────────────────────────────────
+def build_med_notes_df(wide: pd.DataFrame, daily_scored: pd.DataFrame) -> pd.DataFrame:
+    """Extract non-empty medication change notes, joined with daily scores."""
+    if wide.empty or "medication_notes" not in wide.columns:
+        return pd.DataFrame()
+    med = wide[
+        wide["medication_notes"].notna() &
+        (wide["medication_notes"].astype(str).str.strip() != "")
+    ].copy()
+    if med.empty:
+        return pd.DataFrame()
+    med["date"] = med["submitted_date"]
+    med = med[["submitted_at","date","medication_notes"]].copy()
+    if not daily_scored.empty:
+        score_cols = [f"{d} Score %" for d in DOMAINS]
+        day_scores = daily_scored[["date"] + [c for c in score_cols if c in daily_scored.columns]].copy()
+        med = med.merge(day_scores, on="date", how="left")
+    return med.sort_values("submitted_at", ascending=False).reset_index(drop=True)
+
+# ──────────────────────────────────────────────────────────
+# CLINICIAN EXPORT
+# ──────────────────────────────────────────────────────────
+def generate_clinician_report(
+    daily: pd.DataFrame,
+    bands: dict,
+    personal_bl: dict,
+    episodes: pd.DataFrame,
+    notes: pd.DataFrame,
+    med_notes: pd.DataFrame,
+    weights: dict,
+    window_days: int = 30,
+) -> str:
+    """Generate a structured plain-text / markdown clinician summary."""
+    import datetime
+    today = datetime.date.today()
+    window_start = today - datetime.timedelta(days=window_days)
+
+    lines: list[str] = []
+    lines.append(f"# Bipolar Dashboard — Clinician Summary")
+    lines.append(f"**Generated:** {today.strftime('%d %B %Y')}  ")
+    lines.append(f"**Period:** Last {window_days} days ({window_start.strftime('%d %b')} – {today.strftime('%d %b %Y')})")
+    lines.append("")
+
+    # ── Current status ──────────────────────────────────────
+    lines.append("## Current Status")
+    if not daily.empty:
+        latest = daily.sort_values("date").iloc[-1]
+        mult   = float(latest.get("meta_multiplier", 1.0) or 1.0)
+        lines.append(f"**Latest entry:** {latest['date']}  ")
+        lines.append(f"**Meta force multiplier:** ×{mult:.2f}" +
+                     (" ⚡ active" if mult > 1.05 else " (baseline)"))
+        lines.append("")
+        lines.append("| Domain | Score | Raw | Band | vs Baseline |")
+        lines.append("|--------|-------|-----|------|-------------|")
+        for d in DOMAINS:
+            score = float(latest.get(f"{d} Score %", 0) or 0)
+            raw   = float(latest.get(f"{d} Score % (raw)", score) or score)
+            band  = classify_score(score, d, bands)
+            pb    = personal_bl.get(d, {})
+            vs_bl = (f"{score - pb['mean']:+.1f}pp vs baseline"
+                     if pb.get("reliable") and pb.get("mean") is not None else "—")
+            lines.append(f"| {d} | {score:.1f}% | {raw:.1f}% | {band.upper()} | {vs_bl} |")
+    else:
+        lines.append("*No daily data available.*")
+    lines.append("")
+
+    # ── Recent trends ───────────────────────────────────────
+    lines.append("## Domain Trends (last 30 days)")
+    period = daily[daily["date"] >= window_start] if not daily.empty else daily
+    if not period.empty:
+        lines.append("| Domain | Mean % | Peak % | Days in Well | Days in Watch+ | Days in Warning+ |")
+        lines.append("|--------|--------|--------|-------------|----------------|-----------------|")
+        for d in DOMAINS:
+            col = f"{d} Score %"
+            if col not in period.columns:
+                continue
+            scores    = period[col].dropna()
+            mean_s    = scores.mean()
+            peak_s    = scores.max()
+            n_well    = int((scores.apply(lambda s: classify_score(s, d, bands) == "well")).sum())
+            n_watch   = int((scores.apply(lambda s: classify_score(s, d, bands) in ["watch","caution","warning","critical"])).sum())
+            n_warning = int((scores.apply(lambda s: classify_score(s, d, bands) in ["warning","critical"])).sum())
+            lines.append(f"| {d} | {mean_s:.1f}% | {peak_s:.1f}% | {n_well} | {n_watch} | {n_warning} |")
+    else:
+        lines.append("*No data in this period.*")
+    lines.append("")
+
+    # ── Personal baseline ───────────────────────────────────
+    lines.append("## Personal Baseline")
+    lines.append("*(Computed from days where all domains were in the Well band)*")
+    lines.append("")
+    for d in DOMAINS:
+        pb = personal_bl.get(d, {})
+        if pb.get("reliable"):
+            lines.append(f"- **{d}:** mean {pb['mean']}%, ±1 SD {pb['lower']}–{pb['upper']}% "
+                         f"(based on {pb['n']} well days)")
+        else:
+            lines.append(f"- **{d}:** baseline not yet reliable ({pb.get('n',0)} well days recorded)")
+    lines.append("")
+
+    # ── Episodes ────────────────────────────────────────────
+    lines.append("## Labelled Episodes")
+    if not episodes.empty:
+        recent_ep = episodes[
+            pd.to_datetime(episodes["end_date"]) >= pd.Timestamp(window_start)
+        ]
+        if not recent_ep.empty:
+            for _, ep in recent_ep.sort_values("start_date", ascending=False).iterrows():
+                lines.append(
+                    f"- **{ep['episode_type']}** — "
+                    f"{ep['start_date']} to {ep['end_date']}"
+                    + (f": {ep['notes']}" if ep.get("notes") else "")
+                )
+        else:
+            lines.append("*No episodes ending in this period.*")
+    else:
+        lines.append("*No episodes labelled yet.*")
+    lines.append("")
+
+    # ── Medication notes ────────────────────────────────────
+    lines.append("## Medication Notes")
+    if not med_notes.empty:
+        recent_med = med_notes[med_notes["date"] >= window_start] if not med_notes.empty else med_notes
+        if not recent_med.empty:
+            for _, m in recent_med.sort_values("submitted_at", ascending=False).iterrows():
+                lines.append(f"- **{m['date']}:** {m['medication_notes']}")
+        else:
+            lines.append("*No medication notes in this period.*")
+    else:
+        lines.append("*No medication notes recorded.*")
+    lines.append("")
+
+    # ── Journal highlights ──────────────────────────────────
+    lines.append("## Journal Highlights")
+    lines.append("*(Entries from days in Caution band or above)*")
+    if not notes.empty:
+        elevated = notes[notes["worst_band"].isin(["caution","warning","critical"])]
+        recent_notes = elevated[elevated["date"] >= window_start] if not elevated.empty else elevated
+        if not recent_notes.empty:
+            for _, n in recent_notes.sort_values("submitted_at", ascending=False).head(10).iterrows():
+                band = n.get("worst_band","")
+                text = str(n.get("experience_description",""))[:300]
+                lines.append(f"- **{n['date']}** [{band.upper()}]: {text}" +
+                             ("…" if len(str(n.get("experience_description",""))) > 300 else ""))
+        else:
+            lines.append("*No elevated-band journal entries in this period.*")
+    else:
+        lines.append("*No journal entries.*")
+    lines.append("")
+
+    # ── Footer ──────────────────────────────────────────────
+    lines.append("---")
+    lines.append("*This summary was generated automatically from self-reported daily monitoring data. "
+                 "It is intended to support clinical conversation, not to replace clinical judgement.*")
+
+    return "\n".join(lines)
+
 def _generate_insights(daily, risk, trends, bands, personal, movement_threshold) -> list[dict]:
     insights: list[dict] = []
 
@@ -1213,8 +1511,10 @@ wide_df      = clean_and_widen(indexed_df)
 daily_df     = build_scored_table(wide_df, weights, daily_only=True)
 snapshots_df = build_scored_table(wide_df, weights, daily_only=False)
 warnings_df  = build_warnings(daily_df, snapshots_df, bands, mv_threshold)
-personal_bl  = compute_personal_baseline(daily_df, bands, pb_window)
+episodes_df  = load_episodes()
+personal_bl  = compute_personal_baseline(daily_df, bands, pb_window, episodes=episodes_df)
 notes_df     = build_notes_df(wide_df, daily_df, bands)
+med_notes_df = build_med_notes_df(wide_df, daily_df)
 
 # ──────────────────────────────────────────────────────────
 # GLOBAL FILTERS (sidebar)
@@ -1222,6 +1522,21 @@ notes_df     = build_notes_df(wide_df, daily_df, bands)
 with st.sidebar:
     st.markdown("## Filters")
     st.caption("Applied to all charts and tables.")
+
+    # Refresh control
+    import datetime as _dt
+    if "last_refreshed" not in st.session_state:
+        st.session_state["last_refreshed"] = _dt.datetime.now()
+    elapsed = int((_dt.datetime.now() - st.session_state["last_refreshed"]).total_seconds())
+    st.caption(f"Data last refreshed {elapsed}s ago")
+    if st.button("🔄 Refresh data", use_container_width=True):
+        load_sheet.clear()
+        load_episodes.clear()
+        load_weights.clear()
+        load_baseline_config.clear()
+        st.session_state["last_refreshed"] = _dt.datetime.now()
+        st.rerun()
+    st.divider()
 
     if not daily_df.empty:
         min_date = daily_df["date"].min()
@@ -1317,8 +1632,11 @@ st.divider()
 # TABS
 # ──────────────────────────────────────────────────────────
 (tab_overview, tab_snapshots_tab, tab_analysis,
- tab_baseline, tab_journal, tab_daily, tab_data, tab_settings) = st.tabs([
-    "Overview", "Snapshots", "Analysis", "Baselines", "Journal", "Daily Model", "Data Layer", "Settings"
+ tab_baseline, tab_journal, tab_episodes, tab_export,
+ tab_daily, tab_data, tab_settings) = st.tabs([
+    "Overview", "Snapshots", "Analysis", "Baselines",
+    "Journal", "Episodes", "Clinician Export",
+    "Daily Model", "Data Layer", "Settings"
 ])
 
 # ── OVERVIEW ──────────────────────────────────────────────
@@ -1361,6 +1679,27 @@ with tab_overview:
             b = bands.get(d, DEFAULT_BASELINE_BANDS.get(d, {}))
             fig_all.add_hline(y=b.get("well", 20), line_dash="dot",
                               line_color="rgba(52,199,89,0.35)", line_width=1)
+
+        # Episode overlays on the all-domains chart
+        fig_all = add_episode_overlays(fig_all, episodes_df)
+
+        # Medication markers on the all-domains chart
+        if not med_notes_df.empty:
+            med_in_range = med_notes_df[
+                (med_notes_df["date"] >= filter_start) &
+                (med_notes_df["date"] <= filter_end)
+            ] if filter_start else med_notes_df
+            for _, m in med_in_range.iterrows():
+                note_text = str(m.get("medication_notes",""))[:35]
+                fig_all.add_vline(
+                    x=str(m["date"]),
+                    line_dash="dash", line_color="rgba(0,150,100,0.5)", line_width=1.5,
+                    annotation_text=f"💊 {note_text}",
+                    annotation_position="top",
+                    annotation_font_size=8,
+                    annotation_font_color="rgba(0,150,100,1)",
+                )
+
         fig_all.update_layout(
             height=chart_height, margin=dict(l=10, r=10, t=10, b=10),
             yaxis=dict(range=[0, 100], title="Score %", ticksuffix="%"),
@@ -1369,6 +1708,12 @@ with tab_overview:
             plot_bgcolor="white", paper_bgcolor="white",
         )
         st.plotly_chart(fig_all, use_container_width=True)
+
+        # Medication change markers on the overview chart
+        if not med_notes_df.empty:
+            med_in_range = med_notes_df[med_notes_df["date"] >= filter_start] if filter_start else med_notes_df
+            if not med_in_range.empty:
+                st.caption("💊 Vertical dashed lines on the chart above mark days with medication notes.")
 
         st.markdown("### Per-domain charts")
         c1, c2 = st.columns(2)
@@ -1379,6 +1724,8 @@ with tab_overview:
                                     personal=personal_bl,
                                     movement_threshold=mv_threshold,
                                     show_rolling=show_rolling,
+                                    episodes=episodes_df,
+                                    med_notes=med_notes_df,
                                     height=chart_height),
                     use_container_width=True,
                 )
@@ -1646,15 +1993,184 @@ with tab_journal:
                 st.markdown(f"*Keywords: {kw_tags}*")
             st.divider()
 
+    # Medication notes section
+    st.markdown("## Medication Notes")
+    st.caption("Days where medication changes were reported via the form.")
+    med_filtered = _apply_date_filter(med_notes_df, "date") if not med_notes_df.empty else med_notes_df
+    if med_filtered.empty:
+        st.info("No medication notes in the selected date range.")
+    else:
+        for _, m in med_filtered.iterrows():
+            date_str  = str(m.get("date",""))
+            note_text = str(m.get("medication_notes",""))
+            # Show domain scores for context
+            domain_ctx = []
+            for d in DOMAINS:
+                sc = m.get(f"{d} Score %")
+                if sc is not None and not (isinstance(sc, float) and np.isnan(sc)):
+                    b = classify_score(sc, d, bands)
+                    domain_ctx.append(f"{d}: {sc:.0f}% ({b})")
+            ctx_str = " · ".join(domain_ctx) if domain_ctx else ""
+            st.markdown(
+                f"""<div style="
+                    border-left: 4px solid rgba(0,150,100,0.8);
+                    padding: 10px 16px;
+                    margin-bottom: 10px;
+                    border-radius: 4px;
+                    background: rgba(0,150,100,0.06);
+                ">
+                <strong>💊 {date_str}</strong>
+                &nbsp;&nbsp;<span style="color:#666;font-size:0.85em">{ctx_str}</span>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            st.markdown(note_text)
+            st.divider()
+
+# ── EPISODES ──────────────────────────────────────────────
+with tab_episodes:
+    st.markdown("## Episode Labelling")
+    st.caption(
+        "Label historical periods as episodes. These appear as shaded regions on all "
+        "domain charts and are used to exclude episode periods from the personal baseline. "
+        "Requires a Google Sheet tab named **Episode Log** with columns: "
+        "`episode_id, episode_type, start_date, end_date, notes`."
+    )
+
+    ws_exists = safe_worksheet(EPISODE_TAB) is not None
+    if not ws_exists:
+        st.warning(
+            f"Worksheet '{EPISODE_TAB}' not found. Create a tab with that exact name "
+            "in your Google Sheet, then episode saving will work."
+        )
+
+    # Add new episode form
+    st.markdown("### Add episode")
+    with st.form("add_episode_form"):
+        fc1, fc2, fc3 = st.columns([2, 2, 3])
+        ep_type  = fc1.selectbox("Episode type", EPISODE_TYPES, key="ep_type")
+        ep_start = fc2.date_input("Start date", key="ep_start")
+        ep_end   = fc3.date_input("End date",   key="ep_end")
+        ep_notes = st.text_input("Notes (optional)", placeholder="e.g. hospitalisation, triggered by sleep deprivation…", key="ep_notes")
+        submitted = st.form_submit_button("Add episode", type="primary")
+        if submitted:
+            if ep_end < ep_start:
+                st.error("End date must be on or after start date.")
+            else:
+                ok, msg = add_episode(ep_type, ep_start, ep_end, ep_notes)
+                if ok:
+                    st.success(f"Episode added. {msg}")
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+    st.divider()
+
+    # Existing episodes
+    st.markdown("### Labelled episodes")
+    episodes_df = load_episodes()  # refresh after potential add
+    if episodes_df.empty:
+        st.info("No episodes labelled yet.")
+    else:
+        ep_colour_map = {"Depressive":"🔴","Hypomanic":"🟠","Manic":"🟡",
+                         "Mixed":"🔵","Psychotic":"🟣","Other":"⚪"}
+        for _, ep in episodes_df.sort_values("start_date", ascending=False).iterrows():
+            icon = ep_colour_map.get(ep["episode_type"], "⚪")
+            duration = (pd.Timestamp(ep["end_date"]) - pd.Timestamp(ep["start_date"])).days + 1
+            with st.container():
+                ec1, ec2 = st.columns([5, 1])
+                with ec1:
+                    st.markdown(
+                        f"{icon} **{ep['episode_type']}** — "
+                        f"{ep['start_date']} to {ep['end_date']} "
+                        f"({duration} day{'s' if duration != 1 else ''})"
+                        + (f"  \n*{ep['notes']}*" if ep.get("notes") else "")
+                    )
+                with ec2:
+                    if st.button("Delete", key=f"del_{ep['episode_id']}"):
+                        ok, msg = delete_episode(ep["episode_id"])
+                        if ok:
+                            st.rerun()
+                        else:
+                            st.error(msg)
+            st.divider()
+
+    # Episode context chart — domain scores around each episode
+    if not episodes_df.empty and not daily_df.empty:
+        st.markdown("### Domain scores around each episode")
+        st.caption("Shows scores in the 14 days before, during, and after each labelled episode.")
+        for _, ep in episodes_df.sort_values("start_date", ascending=False).iterrows():
+            start = pd.Timestamp(ep["start_date"])
+            end   = pd.Timestamp(ep["end_date"])
+            window_start_ep = (start - pd.Timedelta(days=14)).date()
+            window_end_ep   = (end   + pd.Timedelta(days=14)).date()
+            ep_window = daily_df[
+                (daily_df["date"] >= window_start_ep) &
+                (daily_df["date"] <= window_end_ep)
+            ].copy()
+            if ep_window.empty:
+                continue
+            with st.expander(f"{ep['episode_type']} — {ep['start_date']} to {ep['end_date']}", expanded=False):
+                fig_ep = make_overview_chart(ep_window, bands, height=280)
+                # Add the episode shading
+                single_ep = episodes_df[episodes_df["episode_id"] == ep["episode_id"]]
+                fig_ep = add_episode_overlays(fig_ep, single_ep)
+                st.plotly_chart(fig_ep, use_container_width=True)
+
+# ── CLINICIAN EXPORT ──────────────────────────────────────
+with tab_export:
+    st.markdown("## Clinician Export")
+    st.caption(
+        "A structured summary covering the last 30 days, designed to support "
+        "clinical appointments. Copy the text below or save it manually."
+    )
+
+    exp_col1, exp_col2 = st.columns([2, 1])
+    with exp_col1:
+        export_window = st.slider("Days to cover", 7, 90, 30, 7, key="export_window")
+    with exp_col2:
+        st.markdown("&nbsp;")  # spacer
+
+    report = generate_clinician_report(
+        daily=daily_df,
+        bands=bands,
+        personal_bl=personal_bl,
+        episodes=episodes_df,
+        notes=notes_df,
+        med_notes=med_notes_df,
+        weights=weights,
+        window_days=export_window,
+    )
+
+    # Rendered preview
+    with st.expander("Preview (rendered)", expanded=True):
+        st.markdown(report)
+
+    # Raw copyable text
+    st.markdown("### Copy-ready text")
+    st.text_area(
+        "Select all and copy (Ctrl+A, Ctrl+C)",
+        value=report,
+        height=400,
+        key="export_text",
+    )
+
 # ── BASELINES ─────────────────────────────────────────────
 with tab_baseline:
     st.markdown("## Baselines")
 
     st.markdown("### Your personal baseline")
+    ep_exclusion_note = ""
+    if not episodes_df.empty:
+        n_ep_days = sum(
+            (pd.Timestamp(ep["end_date"]) - pd.Timestamp(ep["start_date"])).days + 1
+            for _, ep in episodes_df.iterrows()
+        )
+        ep_exclusion_note = f" Episode periods are excluded ({n_ep_days} labelled episode days removed)."
     st.caption(
         f"Derived from days where **all** domains were in the Well band. "
         f"Uses the most recent **{pb_window}** such days. "
-        f"Requires **{PERSONAL_BASELINE_MIN_DAYS}+** days to be reliable."
+        f"Requires **{PERSONAL_BASELINE_MIN_DAYS}+** days to be reliable.{ep_exclusion_note}"
     )
     pb_cols = st.columns(len(DOMAINS))
     for i, domain in enumerate(DOMAINS):
@@ -1684,6 +2200,7 @@ with tab_baseline:
             st.plotly_chart(
                 make_band_chart(daily_filtered, domain, bands, personal=personal_bl,
                                 movement_threshold=mv_threshold, show_rolling=show_rolling,
+                                episodes=episodes_df, med_notes=med_notes_df,
                                 height=300),
                 use_container_width=True,
             )
