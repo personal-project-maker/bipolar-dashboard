@@ -1147,29 +1147,65 @@ def make_snapshot_timeline(snapshots: pd.DataFrame, bands: dict, height: int = 2
     return fig
 
 # ──────────────────────────────────────────────────────────
-# WARNINGS
+# WARNINGS  (with Mixed-aware deduplication)
 # ──────────────────────────────────────────────────────────
 def build_warnings(daily: pd.DataFrame, snapshots: pd.DataFrame, bands: dict,
                    movement_threshold: float = DEFAULT_MOVEMENT_THRESHOLD) -> pd.DataFrame:
+    """
+    Build warnings with domain deduplication:
+
+    Mixed takes precedence over individual Depression and Mania alerts.
+    If Mixed is in caution/warning/critical, Depression and Mania alerts
+    are suppressed as primary warnings — they are retained as 'suppressed'
+    rows with a note so they can be shown as context rather than top-level alerts.
+    Psychosis is always independent and never suppressed.
+    Movement alerts are never suppressed.
+    """
     rows: list[dict] = []
 
     def _check_row(row: pd.Series, source: str) -> None:
+        scores = {d: float(row.get(f"{d} Score %", 0) or 0) for d in DOMAINS}
+        deltas = {d: float(row.get(f"{d} Score % Delta", 0) or 0) for d in DOMAINS}
+        domain_bands = {d: classify_score(scores[d], d, bands) for d in DOMAINS}
+
+        mixed_elevated = domain_bands["Mixed"] in ("caution", "warning", "critical")
+
         for domain in DOMAINS:
-            score = float(row.get(f"{domain} Score %", 0) or 0)
-            delta = float(row.get(f"{domain} Score % Delta", 0) or 0)
-            band  = classify_score(score, domain, bands)
+            score = scores[domain]
+            delta = deltas[domain]
+            band  = domain_bands[domain]
+
+            # Determine whether this domain should be suppressed as a
+            # standalone warning because Mixed already captures it
+            suppress_as_primary = (
+                mixed_elevated
+                and domain in ("Depression", "Mania")
+                and band in ("caution", "warning", "critical")
+            )
+
             if band in ("warning", "critical"):
-                rows.append(dict(source=source, domain=domain, severity="High",
+                rows.append(dict(
+                    source=source, domain=domain, severity="High",
                     score_pct=round(score, 1), delta=round(delta, 1), band=band,
-                    message=f"{domain} score {score:.1f}% — {band} band"))
+                    suppressed=suppress_as_primary,
+                    message=f"{domain} score {score:.1f}% — {band} band",
+                ))
             elif band == "caution":
-                rows.append(dict(source=source, domain=domain, severity="Medium",
+                rows.append(dict(
+                    source=source, domain=domain, severity="Medium",
                     score_pct=round(score, 1), delta=round(delta, 1), band=band,
-                    message=f"{domain} score {score:.1f}% — caution band"))
+                    suppressed=suppress_as_primary,
+                    message=f"{domain} score {score:.1f}% — caution band",
+                ))
+
+            # Movement alerts — never suppressed
             if band == "well" and abs(delta) >= movement_threshold:
-                rows.append(dict(source=source, domain=domain, severity="Movement",
+                rows.append(dict(
+                    source=source, domain=domain, severity="Movement",
                     score_pct=round(score, 1), delta=round(delta, 1), band=band,
-                    message=f"{domain} moved {delta:+.1f}pp (still in well band)"))
+                    suppressed=False,
+                    message=f"{domain} moved {delta:+.1f}pp (still in well band)",
+                ))
 
     if not daily.empty:
         _check_row(daily.sort_values("date").iloc[-1], "Daily")
@@ -1177,11 +1213,12 @@ def build_warnings(daily: pd.DataFrame, snapshots: pd.DataFrame, bands: dict,
         _check_row(snapshots.sort_values("submitted_at").iloc[-1], "Snapshot")
 
     if not rows:
-        return pd.DataFrame(columns=["source","domain","severity","score_pct","delta","band","message"])
-    order = {"High": 0, "Medium": 1, "Movement": 2}
+        return pd.DataFrame(columns=["source","domain","severity","score_pct","delta","band","suppressed","message"])
+
+    sev_order = {"High": 0, "Medium": 1, "Movement": 2}
     df = pd.DataFrame(rows)
-    df["_o"] = df["severity"].map(order).fillna(9)
-    return df.sort_values("_o").drop(columns=["_o"]).reset_index(drop=True)
+    df["_o"] = df["severity"].map(sev_order).fillna(9)
+    return df.sort_values(["suppressed", "_o"]).drop(columns=["_o"]).reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────
 # WEIGHTS PERSISTENCE
@@ -1823,7 +1860,10 @@ m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Total entries",   len(raw_df))
 m2.metric("Days tracked",    len(daily_df))
 m3.metric("Snapshots",       int(wide_df["submission_type_derived"].eq(SUBMISSION_TYPE_SNAPSHOT).sum()) if "submission_type_derived" in wide_df.columns else len(snapshots_df))
-m4.metric("Active warnings", int(len(warnings_df[warnings_df["severity"] == "High"])) if not warnings_df.empty else 0)
+m4.metric("Active warnings", int(len(warnings_df[
+    (warnings_df["severity"] == "High") &
+    (~warnings_df["suppressed"] if "suppressed" in warnings_df.columns else True)
+])) if not warnings_df.empty else 0)
 if not daily_df.empty:
     lo = float(daily_df["Overall Score %"].iloc[-1])
     pr = float(daily_df["Overall Score %"].iloc[-2]) if len(daily_df) > 1 else lo
@@ -1886,8 +1926,37 @@ with tab_overview:
         st.success("No active alerts.")
     else:
         sev_icon = {"High": "🔴", "Medium": "🟡", "Movement": "🟠"}
-        for _, w in warnings_df.iterrows():
-            st.markdown(f"{sev_icon.get(w['severity'], 'ℹ️')} **{w['domain']}** ({w['source']}) — {w['message']}")
+
+        primary   = warnings_df[~warnings_df["suppressed"]] if "suppressed" in warnings_df.columns else warnings_df
+        suppressed = warnings_df[warnings_df["suppressed"]]  if "suppressed" in warnings_df.columns else pd.DataFrame()
+
+        if primary.empty:
+            st.success("No active primary alerts.")
+        else:
+            for _, w in primary.iterrows():
+                st.markdown(f"{sev_icon.get(w['severity'], 'ℹ️')} **{w['domain']}** ({w['source']}) — {w['message']}")
+
+        # Show suppressed Dep/Mania as context under a mixed warning
+        if not suppressed.empty:
+            mixed_active = (
+                not primary[primary["domain"] == "Mixed"].empty
+                if not primary.empty else False
+            )
+            if mixed_active:
+                suppressed_names = suppressed["domain"].unique().tolist()
+                context_parts = []
+                for d in suppressed_names:
+                    rows_d = suppressed[suppressed["domain"] == d]
+                    if not rows_d.empty:
+                        score = rows_d.iloc[0]["score_pct"]
+                        band  = rows_d.iloc[0]["band"]
+                        context_parts.append(f"{d}: {score:.1f}% ({band})")
+                if context_parts:
+                    st.caption(
+                        f"ℹ️ Also elevated as expected Mixed components — "
+                        + ", ".join(context_parts)
+                        + ". Shown here for context; Mixed is the primary alert."
+                    )
 
     if not daily_filtered.empty:
         filtered_domains = [d for d in selected_domains if d in DOMAINS]
