@@ -515,14 +515,22 @@ def build_daily_aggregate(wide: pd.DataFrame, weights: dict[str, float]) -> pd.D
 
     by_code = _catalog_by_code()
 
-    # Score every individual submission first (snapshot mode — no daily_only filter)
+    # Score every individual submission (full snapshot mode)
     scored_all = build_scored_table(wide, weights, daily_only=False)
 
-    # Carry submission_type_derived into scored_all
-    scored_all = scored_all.merge(
-        wide[["submission_id", "submission_type_derived"]],
-        on="submission_id", how="left"
-    )
+    # Attach submission_type_derived directly from wide using positional alignment
+    # (both share the same index after build_scored_table resets it)
+    if "submission_type_derived" in wide.columns:
+        # Map by submission_id for safety
+        type_map = wide.set_index("submission_id")["submission_type_derived"].to_dict()
+        scored_all["submission_type_derived"] = scored_all["submission_id"].map(type_map).fillna(SUBMISSION_TYPE_SNAPSHOT)
+    else:
+        scored_all["submission_type_derived"] = SUBMISSION_TYPE_SNAPSHOT
+
+    # Also bring submitted_date into scored_all if not already present
+    if "submitted_date" not in scored_all.columns and "submitted_date" in wide.columns:
+        date_map = wide.set_index("submission_id")["submitted_date"].to_dict()
+        scored_all["submitted_date"] = scored_all["submission_id"].map(date_map)
 
     # Per-submission weight scalar
     scored_all["_sw"] = scored_all["submission_type_derived"].map({
