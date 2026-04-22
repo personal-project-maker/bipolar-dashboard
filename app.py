@@ -1,15 +1,18 @@
 """
-Wellbeing Dashboard — full featured build.
+Bipolar Dashboard — full featured build.
 
-New in this version:
-  • Notes journal: searchable, colour-coded by day's band status, with keyword extraction
-  • Graph filters: date range + domain selector applied across all charts
-  • 7-day rolling average overlay on all domain charts
-  • Snapshot component charts: radar + bar breakdown of what's driving each domain score
-  • Domain-specific sleep weight overrides: sleep deprioritised in Depression,
-    kept significant in Mania and Mixed
-  • Snapshot timeline with per-day submission count
-  • Improved insights: consecutive-day streak detection in elevated bands
+Features:
+  • Baseline band system with personal baseline (episode periods excluded)
+  • Meta question force multipliers + insight-inverse items for Psychosis
+  • Domain-specific sleep weight overrides
+  • Episode labelling with chart overlays and pre-episode score context
+  • Medication notes from form field, shown in journal and on charts
+  • Clinician export: structured 30-day summary (copyable markdown)
+  • Journal: searchable, colour-coded by band, keyword extraction
+  • Snapshot component charts: radar + bar breakdown per domain
+  • Global date/domain filters with 7-day rolling average toggle
+  • Refresh button + last-updated timestamp in sidebar
+  • Consecutive-day streak detection and movement alerts
 """
 
 import streamlit as st
@@ -25,8 +28,8 @@ from typing import Any
 # ──────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ──────────────────────────────────────────────────────────
-st.set_page_config(page_title="Wellbeing Dashboard", layout="wide")
-st.title("Wellbeing Dashboard")
+st.set_page_config(page_title="Bipolar Dashboard", layout="wide")
+st.title("Bipolar Dashboard")
 
 # ──────────────────────────────────────────────────────────
 # AUTHENTICATION
@@ -53,6 +56,7 @@ SHEET_NAME   = "Bipolar Dashboard"
 NEW_FORM_TAB = "Updated Bipolar Form"
 SETTINGS_TAB = "Scoring Settings"
 BASELINE_TAB = "Baseline Settings"
+EPISODE_TAB  = "Episode Log"
 
 @st.cache_resource
 def _gspread_client() -> gspread.Client:
@@ -152,14 +156,20 @@ QUESTION_CATALOG: list[dict[str, Any]] = [
     dict(code="func_sleep_hours",       text="How many hours did I sleep last night?",                                group="functioning",rtype="numeric",   polarity="custom_sleep",  domains=["Depression","Mania","Mixed"], order=450, score_in_snapshot=False),
     dict(code="func_sleep_quality",     text="How poor was my sleep quality last night",                              group="functioning",rtype="scale_1_5", polarity="higher_worse",  domains=["Depression","Mania","Mixed"], order=460, score_in_snapshot=False),
     # META
-    dict(code="meta_unlike_self",             text="Do I feel unlike my usual self?",                                 group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=240),
-    dict(code="meta_something_wrong",         text="Do I think something may be wrong or changing?",                 group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=250),
-    dict(code="meta_concerned",               text="Am I concerned about my current state?",                          group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=260),
-    dict(code="meta_disorganised_thoughts",   text="Do my thoughts feel disorganised or hard to follow?",             group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=270),
-    dict(code="meta_attention_unstable",      text="Is my attention unstable or jumping?",                            group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=280),
-    dict(code="meta_driven_without_thinking", text="Do I feel driven to act without thinking?",                       group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=290),
-    dict(code="meta_intensifying",            text="Is my state intensifying (in any direction)?",                    group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=300),
-    dict(code="meta_towards_episode",         text="Do I feel like I'm moving towards an episode?",                   group="meta",       rtype="scale_1_5", polarity="higher_worse",  domains=[],                          order=310),
+    # FORCE MULTIPLIERS — amplify all domain scores post-calculation
+    # meta_role="force_multiplier" flags these for the multiplier pipeline
+    dict(code="meta_unlike_self",             text="Do I feel unlike my usual self?",                                 group="meta", rtype="scale_1_5", polarity="higher_worse", domains=[], order=240, meta_role="force_multiplier"),
+    dict(code="meta_intensifying",            text="Is my state intensifying (in any direction)?",                    group="meta", rtype="scale_1_5", polarity="higher_worse", domains=[], order=300, meta_role="force_multiplier"),
+    dict(code="meta_towards_episode",         text="Do I feel like I'm moving towards an episode?",                   group="meta", rtype="scale_1_5", polarity="higher_worse", domains=[], order=310, meta_role="force_multiplier"),
+    # INSIGHT ITEMS — contribute normally to Dep/Mania/Mixed; INVERSE to Psychosis
+    # (low concern/insight in psychosis = higher risk, not lower)
+    # meta_role="insight_inverse_psychosis" flags these for domain-specific polarity flip
+    dict(code="meta_something_wrong",         text="Do I think something may be wrong or changing?",                  group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Depression","Mania","Mixed","Psychosis"], order=250, meta_role="insight_inverse_psychosis"),
+    dict(code="meta_concerned",               text="Am I concerned about my current state?",                           group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Depression","Mania","Mixed","Psychosis"], order=260, meta_role="insight_inverse_psychosis"),
+    # DIRECT CONTRIBUTORS — added to specific domains at face value
+    dict(code="meta_disorganised_thoughts",   text="Do my thoughts feel disorganised or hard to follow?",              group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Psychosis","Mixed"],             order=270, meta_role="contributor"),
+    dict(code="meta_attention_unstable",      text="Is my attention unstable or jumping?",                             group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Mania","Mixed"],                 order=280, meta_role="contributor"),
+    dict(code="meta_driven_without_thinking", text="Do I feel driven to act without thinking?",                        group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Mania","Mixed"],                 order=290, meta_role="contributor"),
     # FLAGS
     dict(code="flag_not_myself",          text="I've been feeling \"not like myself\"",                               group="flags",      rtype="boolean_yes_no", polarity="higher_worse", domains=["Depression","Mania","Psychosis"],         order=320),
     dict(code="flag_mood_shift",          text="I noticed a sudden mood shift",                                       group="flags",      rtype="boolean_yes_no", polarity="higher_worse", domains=["Depression","Mania","Psychosis","Mixed"],  order=330),
@@ -176,7 +186,8 @@ QUESTION_CATALOG: list[dict[str, Any]] = [
     dict(code="obs_down_coming", text="Observations [I feel like I'm going to experience a down]",   group="observations", rtype="boolean_yes_no", polarity="higher_worse", domains=["Depression"],        order=430),
     dict(code="obs_mixed_coming",text="Observations [I feel like I'm going to experience a mixed]",  group="observations", rtype="boolean_yes_no", polarity="higher_worse", domains=["Psychosis","Mixed"], order=440),
     # NOTES
-    dict(code="experience_description", text="How would I describe my experiences?", group="notes", rtype="text", polarity="not_applicable", domains=[], order=470),
+    dict(code="experience_description", text="How would I describe my experiences?",                    group="notes", rtype="text", polarity="not_applicable", domains=[], order=470),
+    dict(code="medication_notes",       text="Have there been any medication changes? If so, what?",    group="notes", rtype="text", polarity="not_applicable", domains=[], order=480),
 ]
 
 for _q in QUESTION_CATALOG:
@@ -226,6 +237,12 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "flag_physiological_stress": 1.0, "flag_psychological_stress": 1.0,
     "obs_up_now": 1.0, "obs_down_now": 1.0, "obs_mixed_now": 1.0,
     "obs_up_coming": 0.75, "obs_down_coming": 0.75, "obs_mixed_coming": 0.75,
+    # Meta contributors (force multipliers have no weight here — they act post-scoring)
+    "meta_something_wrong": 1.25,          # insight item — moderate weight in Dep/Mania/Mixed
+    "meta_concerned": 1.0,                 # insight item — lower weight, more reactive
+    "meta_disorganised_thoughts": 1.75,    # strong Psychosis/Mixed contributor
+    "meta_attention_unstable": 1.25,       # Mania/Mixed contributor
+    "meta_driven_without_thinking": 1.5,   # Mania/Mixed contributor — reinforces impulsivity
 }
 
 # ──────────────────────────────────────────────────────────
@@ -246,6 +263,63 @@ def _effective_weight(code: str, domain: str, base_weights: dict[str, float]) ->
     base = base_weights.get(code, 0.0)
     multiplier = DOMAIN_WEIGHT_MULTIPLIERS.get(domain, {}).get(code, 1.0)
     return base * multiplier
+
+# ──────────────────────────────────────────────────────────
+# META QUESTION ROLES
+# ──────────────────────────────────────────────────────────
+# Force multipliers: amplify all domain scores post-calculation.
+# Range: 1.0 (no amplification) to META_MULTIPLIER_MAX (full amplification).
+# The composite of the three items is mapped linearly into this range.
+META_MULTIPLIER_MAX: float = 1.35   # max 35% amplification at full score
+
+FORCE_MULTIPLIER_CODES = [
+    q["code"] for q in QUESTION_CATALOG if q.get("meta_role") == "force_multiplier"
+]
+
+# Insight-inverse items: in Psychosis, LOW concern/insight = HIGHER risk.
+# In all other domains they contribute normally (higher score = worse).
+INSIGHT_INVERSE_CODES = [
+    q["code"] for q in QUESTION_CATALOG if q.get("meta_role") == "insight_inverse_psychosis"
+]
+
+def _normalise_meta_item(raw_value: Any) -> float:
+    """Normalise a single scale_1_5 meta item to 0–100."""
+    v = pd.to_numeric(raw_value, errors="coerce")
+    if pd.isna(v):
+        return 0.0
+    return float(min(max((v - 1.0) / 4.0 * 100.0, 0.0), 100.0))
+
+def compute_meta_multiplier(row: pd.Series) -> float:
+    """
+    Compute the force-multiplier scalar for one row (submission).
+
+    Takes the mean of the three multiplier items (meta_unlike_self,
+    meta_intensifying, meta_towards_episode), each normalised to 0–100,
+    then maps that average linearly to [1.0, META_MULTIPLIER_MAX].
+
+    Returns a scalar in [1.0, META_MULTIPLIER_MAX].
+    """
+    scores = []
+    for code in FORCE_MULTIPLIER_CODES:
+        if code in row.index:
+            scores.append(_normalise_meta_item(row[code]))
+    if not scores:
+        return 1.0
+    avg = float(np.mean(scores))  # 0–100
+    return 1.0 + (avg / 100.0) * (META_MULTIPLIER_MAX - 1.0)
+
+def _psychosis_insight_score(row: pd.Series) -> float:
+    """
+    For Psychosis only: low concern/insight = higher risk.
+    Inverts the normalised insight item scores (100 - score),
+    then returns the mean as an additive contribution (0–100).
+    """
+    scores = []
+    for code in INSIGHT_INVERSE_CODES:
+        if code in row.index:
+            norm = _normalise_meta_item(row[code])
+            scores.append(100.0 - norm)   # invert: low concern → high score
+    return float(np.mean(scores)) if scores else 0.0
 
 # ──────────────────────────────────────────────────────────
 # RAW DATA PROCESSING
@@ -316,8 +390,18 @@ def _domain_score(frame: pd.DataFrame, domain: str, weights: dict[str, float],
     ]
     if not codes:
         return pd.Series(0.0, index=frame.index)
-    num = sum(frame[c].fillna(0.0) * _effective_weight(c, domain, weights) for c in codes)
-    den = sum(_effective_weight(c, domain, weights) for c in codes)
+
+    num = pd.Series(0.0, index=frame.index)
+    den = 0.0
+    for c in codes:
+        ew = _effective_weight(c, domain, weights)
+        col_vals = frame[c].fillna(0.0)
+        # Insight-inverse items: flip in Psychosis (low concern = higher risk)
+        if domain == "Psychosis" and c in INSIGHT_INVERSE_CODES:
+            col_vals = 100.0 - col_vals
+        num += col_vals * ew
+        den += ew
+
     return num / den if den else pd.Series(0.0, index=frame.index)
 
 def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
@@ -330,6 +414,8 @@ def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
             src["submitted_at"]
             - src.groupby("submitted_date")["submitted_at"].transform("min")
         ).dt.total_seconds() / 60.0
+
+    # Normalise all scoreable questions
     by_code = _catalog_by_code()
     for code, meta in by_code.items():
         if code in src.columns and meta["rtype"] != "text":
@@ -338,15 +424,32 @@ def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
     for code in by_code:
         if f"_n_{code}" in norm_frame.columns:
             norm_frame[code] = norm_frame[f"_n_{code}"]
+
+    # Raw domain scores (pre-multiplier)
     for domain in DOMAINS:
-        src[f"{domain} Score %"] = _domain_score(norm_frame, domain, weights, snapshot=not daily_only)
+        src[f"{domain} Score % (raw)"] = _domain_score(
+            norm_frame, domain, weights, snapshot=not daily_only
+        )
+
+    # Compute force multiplier per row from the three meta items
+    # We use the raw (un-normalised) meta columns from src for this
+    src["meta_multiplier"] = src.apply(compute_meta_multiplier, axis=1)
+
+    # Apply multiplier and cap at 100
+    for domain in DOMAINS:
+        src[f"{domain} Score %"] = (
+            src[f"{domain} Score % (raw)"] * src["meta_multiplier"]
+        ).clip(upper=100.0)
+
     src["Overall Score %"] = src[[f"{d} Score %" for d in DOMAINS]].mean(axis=1)
     src = src.drop(columns=[c for c in src.columns if c.startswith("_n_")])
+
     if daily_only:
         src = src.rename(columns={"submitted_date": "date"})
         for col in [f"{d} Score %" for d in DOMAINS] + ["Overall Score %"]:
             src[f"{col} Delta"] = src[col].diff()
             src[f"{col} 7d Avg"] = src[col].rolling(7, min_periods=1).mean()
+
     return src.reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────
@@ -357,6 +460,7 @@ def get_snapshot_components(row: pd.Series, domain: str, weights: dict[str, floa
     """
     For a single row (snapshot), return each contributing item's
     normalised score (0-100), effective weight, and weighted contribution.
+    Handles psychosis insight inversion and shows pre/post multiplier scores.
     """
     by_code = _catalog_by_code()
     items = [
@@ -369,27 +473,39 @@ def get_snapshot_components(row: pd.Series, domain: str, weights: dict[str, floa
     if not items:
         return pd.DataFrame()
 
+    multiplier = compute_meta_multiplier(row)
     rows = []
     for q in items:
         code = q["code"]
         raw_val = row.get(code)
         norm_score = float(_normalise(pd.Series([raw_val]), q).iloc[0])
+
+        # Flip insight items in Psychosis
+        inverted = domain == "Psychosis" and code in INSIGHT_INVERSE_CODES
+        display_score = 100.0 - norm_score if inverted else norm_score
+
         eff_w = _effective_weight(code, domain, weights)
-        # Short display label
         label = q["text"]
         label = re.sub(r"^(Have I |Do I |Am I |Is my |I've been |I noticed |I |There were |I had a )", "", label)
         label = label[:45] + "…" if len(label) > 45 else label
+        if inverted:
+            label = f"{label} ⟳"   # mark inverted items
+
         rows.append(dict(
             code=code,
             label=label,
-            norm_score=round(norm_score, 1),
+            norm_score=round(display_score, 1),
             weight=round(eff_w, 2),
-            contribution=round(norm_score * eff_w, 1),
+            contribution=round(display_score * eff_w, 1),
             group=q["group"],
+            inverted=inverted,
         ))
+
     df = pd.DataFrame(rows)
     total_w = df["weight"].sum()
     df["weighted_pct"] = (df["weight"] / total_w * 100).round(1) if total_w else 0
+    df["multiplier"] = round(multiplier, 3)
+    df["score_after_multiplier"] = (df["norm_score"] * multiplier).clip(upper=100).round(1)
     return df.sort_values("contribution", ascending=False)
 
 # ──────────────────────────────────────────────────────────
@@ -452,6 +568,7 @@ def compute_personal_baseline(
     daily: pd.DataFrame,
     bands: dict[str, dict[str, float]],
     window_days: int = 90,
+    episodes: pd.DataFrame | None = None,
 ) -> dict[str, dict]:
     empty = dict(mean=None, sd=None, n=0, lower=None, upper=None, reliable=False)
     if daily.empty:
@@ -462,6 +579,19 @@ def compute_personal_baseline(
         if col in daily.columns:
             ceiling = bands.get(domain, {}).get("well", 20.0)
             mask &= daily[col].fillna(999) <= ceiling
+
+    # Exclude days that fall within labelled episodes
+    if episodes is not None and not episodes.empty:
+        ep_mask = pd.Series(False, index=daily.index)
+        for _, ep in episodes.iterrows():
+            try:
+                ep_start = pd.Timestamp(ep["start_date"]).date()
+                ep_end   = pd.Timestamp(ep["end_date"]).date()
+                ep_mask |= (daily["date"] >= ep_start) & (daily["date"] <= ep_end)
+            except Exception:
+                pass
+        mask &= ~ep_mask
+
     well_days = daily[mask].sort_values("date").tail(window_days)
     result: dict[str, dict] = {}
     for domain in DOMAINS:
@@ -569,6 +699,33 @@ def keyword_frequency_chart(notes_df: pd.DataFrame, top_n: int = 20) -> go.Figur
 # ──────────────────────────────────────────────────────────
 # PLOTLY CHARTS
 # ──────────────────────────────────────────────────────────
+def _add_vline_date(fig: go.Figure, x: str, label: str,
+                    line_color: str = "rgba(0,150,100,0.6)",
+                    line_dash: str = "dash",
+                    line_width: float = 1.5,
+                    font_color: str = "rgba(0,150,100,1)",
+                    font_size: int = 8) -> go.Figure:
+    """
+    Add a vertical line + annotation on a date-string x-axis.
+    Uses add_shape + add_annotation instead of add_vline, which
+    fails when it tries to compute a numeric midpoint of date strings.
+    """
+    fig.add_shape(
+        type="line",
+        xref="x", yref="paper",
+        x0=x, x1=x, y0=0, y1=1,
+        line=dict(color=line_color, width=line_width, dash=line_dash),
+    )
+    fig.add_annotation(
+        x=x, yref="paper", y=1.0,
+        text=label,
+        showarrow=False,
+        font=dict(size=font_size, color=font_color),
+        xanchor="left", yanchor="bottom",
+        bgcolor="rgba(255,255,255,0.7)",
+    )
+    return fig
+
 def make_band_chart(
     daily: pd.DataFrame,
     domain: str,
@@ -576,6 +733,8 @@ def make_band_chart(
     personal: dict | None = None,
     movement_threshold: float = DEFAULT_MOVEMENT_THRESHOLD,
     show_rolling: bool = True,
+    episodes: pd.DataFrame | None = None,
+    med_notes: pd.DataFrame | None = None,
     height: int = 320,
 ) -> go.Figure:
     col = f"{domain} Score %"
@@ -655,6 +814,16 @@ def make_band_chart(
             hovertemplate="%{x}<br>%{y:.1f}% — notable movement<extra></extra>",
         ))
 
+    # Episode overlays
+    if episodes is not None and not episodes.empty:
+        fig = add_episode_overlays(fig, episodes)
+
+    # Medication change markers
+    if med_notes is not None and not med_notes.empty:
+        for _, m in med_notes.iterrows():
+            note_text = str(m.get("medication_notes",""))[:40]
+            fig = _add_vline_date(fig, x=str(m["date"]), label=f"💊 {note_text}")
+
     fig.update_layout(
         height=height, margin=dict(l=10, r=90, t=30, b=10),
         yaxis=dict(range=[0, 100], title="Score %", ticksuffix="%"),
@@ -722,6 +891,12 @@ def make_component_bar(components: pd.DataFrame, domain: str, height: int = 360)
     )
     return fig
 
+def _hex_to_rgba(hex_colour: str, alpha: float = 0.15) -> str:
+    """Convert a #RRGGBB hex string to an rgba(...) string."""
+    h = hex_colour.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
 def make_component_radar(components_by_domain: dict[str, pd.DataFrame], height: int = 420) -> go.Figure:
     """Radar chart overlaying all domains using their top items."""
     fig = go.Figure()
@@ -733,12 +908,12 @@ def make_component_radar(components_by_domain: dict[str, pd.DataFrame], height: 
         values = top["norm_score"].tolist()
         categories += [categories[0]]  # close the polygon
         values     += [values[0]]
-        colour = DOMAIN_COLOURS.get(domain, "#888")
+        colour = DOMAIN_COLOURS.get(domain, "#888888")
         fig.add_trace(go.Scatterpolar(
             r=values, theta=categories, fill="toself", name=domain,
             line=dict(color=colour, width=2),
-            fillcolor=colour.replace("#", "rgba(").replace(")", ",0.1)") if colour.startswith("#") else colour,
-            opacity=0.8,
+            fillcolor=_hex_to_rgba(colour, 0.15),
+            opacity=0.9,
         ))
     fig.update_layout(
         height=height,
@@ -925,8 +1100,282 @@ def _flag_impact(daily: pd.DataFrame) -> pd.DataFrame:
     df["impact"] = df["mean_when_flagged"] - df["mean_when_not_flagged"]
     return df.sort_values("impact", ascending=False).reset_index(drop=True)
 
+# ──────────────────────────────────────────────────────────
+# EPISODE LOG
+# ──────────────────────────────────────────────────────────
+EPISODE_TYPES  = ["Depressive", "Hypomanic", "Manic", "Mixed", "Psychotic", "Other"]
+EPISODE_COLOURS = {
+    "Depressive": _hex_to_rgba("#FF3B30", 0.15),
+    "Hypomanic":  _hex_to_rgba("#FF9500", 0.12),
+    "Manic":      _hex_to_rgba("#FF9500", 0.20),
+    "Mixed":      _hex_to_rgba("#1C7EF2", 0.15),
+    "Psychotic":  _hex_to_rgba("#AF52DE", 0.15),
+    "Other":      _hex_to_rgba("#8E8E93", 0.12),
+}
+EPISODE_LINE_COLOURS = {
+    "Depressive": "#FF3B30", "Hypomanic": "#FF9500", "Manic": "#FF9500",
+    "Mixed": "#1C7EF2", "Psychotic": "#AF52DE", "Other": "#8E8E93",
+}
+
+@st.cache_data(ttl=30)
+def load_episodes() -> pd.DataFrame:
+    """Load episode log from Google Sheet. Returns DataFrame with columns:
+    episode_id, episode_type, start_date, end_date, notes."""
+    ws = safe_worksheet(EPISODE_TAB)
+    if ws is None:
+        return pd.DataFrame(columns=["episode_id","episode_type","start_date","end_date","notes"])
+    try:
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return pd.DataFrame(columns=["episode_id","episode_type","start_date","end_date","notes"])
+        df = pd.DataFrame(values[1:], columns=values[0])
+        df["start_date"] = pd.to_datetime(df["start_date"], errors="coerce").dt.date
+        df["end_date"]   = pd.to_datetime(df["end_date"],   errors="coerce").dt.date
+        return df.dropna(subset=["start_date","end_date"]).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=["episode_id","episode_type","start_date","end_date","notes"])
+
+def _save_episodes(episodes: pd.DataFrame) -> tuple[bool, str]:
+    ws = safe_worksheet(EPISODE_TAB)
+    if ws is None:
+        return False, (
+            f"Worksheet '{EPISODE_TAB}' not found. "
+            "Create a tab with that exact name in your Google Sheet, then try again."
+        )
+    rows = [["episode_id","episode_type","start_date","end_date","notes"]]
+    for _, row in episodes.iterrows():
+        rows.append([
+            str(row.get("episode_id","")),
+            str(row.get("episode_type","")),
+            str(row.get("start_date","")),
+            str(row.get("end_date","")),
+            str(row.get("notes","")),
+        ])
+    ws.clear()
+    ws.update("A1", rows)
+    load_episodes.clear()
+    return True, "Episode log saved."
+
+def add_episode(episode_type: str, start_date, end_date, notes: str) -> tuple[bool, str]:
+    import datetime, hashlib
+    episodes = load_episodes()
+    episode_id = hashlib.md5(
+        f"{episode_type}{start_date}{end_date}{notes}".encode()
+    ).hexdigest()[:8]
+    new_row = pd.DataFrame([{
+        "episode_id": episode_id,
+        "episode_type": episode_type,
+        "start_date": start_date,
+        "end_date": end_date,
+        "notes": notes,
+    }])
+    updated = pd.concat([episodes, new_row], ignore_index=True)
+    return _save_episodes(updated)
+
+def delete_episode(episode_id: str) -> tuple[bool, str]:
+    episodes = load_episodes()
+    updated = episodes[episodes["episode_id"] != episode_id].reset_index(drop=True)
+    return _save_episodes(updated)
+
+def add_episode_overlays(fig: go.Figure, episodes: pd.DataFrame,
+                         x_is_date: bool = True) -> go.Figure:
+    """Add shaded episode regions and start/end markers to any Plotly figure."""
+    if episodes.empty:
+        return fig
+    for _, ep in episodes.iterrows():
+        ep_type = str(ep.get("episode_type", "Other"))
+        x0 = str(ep["start_date"])
+        x1 = str(ep["end_date"])
+        colour = EPISODE_COLOURS.get(ep_type, EPISODE_COLOURS["Other"])
+        line_c = EPISODE_LINE_COLOURS.get(ep_type, "#8E8E93")
+        notes  = str(ep.get("notes",""))
+        label  = ep_type + (f": {notes[:30]}…" if len(notes) > 30 else (f": {notes}" if notes else ""))
+        fig.add_vrect(
+            x0=x0, x1=x1,
+            fillcolor=colour, line_width=1,
+            line_color=line_c,
+            annotation_text=label,
+            annotation_position="top left",
+            annotation_font_size=9,
+            annotation_font_color=line_c,
+        )
+    return fig
+
+# ──────────────────────────────────────────────────────────
+# MEDICATION NOTES
+# ──────────────────────────────────────────────────────────
+def build_med_notes_df(wide: pd.DataFrame, daily_scored: pd.DataFrame) -> pd.DataFrame:
+    """Extract non-empty medication change notes, joined with daily scores."""
+    if wide.empty or "medication_notes" not in wide.columns:
+        return pd.DataFrame()
+    med = wide[
+        wide["medication_notes"].notna() &
+        (wide["medication_notes"].astype(str).str.strip() != "")
+    ].copy()
+    if med.empty:
+        return pd.DataFrame()
+    med["date"] = med["submitted_date"]
+    med = med[["submitted_at","date","medication_notes"]].copy()
+    if not daily_scored.empty:
+        score_cols = [f"{d} Score %" for d in DOMAINS]
+        day_scores = daily_scored[["date"] + [c for c in score_cols if c in daily_scored.columns]].copy()
+        med = med.merge(day_scores, on="date", how="left")
+    return med.sort_values("submitted_at", ascending=False).reset_index(drop=True)
+
+# ──────────────────────────────────────────────────────────
+# CLINICIAN EXPORT
+# ──────────────────────────────────────────────────────────
+def generate_clinician_report(
+    daily: pd.DataFrame,
+    bands: dict,
+    personal_bl: dict,
+    episodes: pd.DataFrame,
+    notes: pd.DataFrame,
+    med_notes: pd.DataFrame,
+    weights: dict,
+    window_days: int = 30,
+) -> str:
+    """Generate a structured plain-text / markdown clinician summary."""
+    import datetime
+    today = datetime.date.today()
+    window_start = today - datetime.timedelta(days=window_days)
+
+    lines: list[str] = []
+    lines.append(f"# Bipolar Dashboard — Clinician Summary")
+    lines.append(f"**Generated:** {today.strftime('%d %B %Y')}  ")
+    lines.append(f"**Period:** Last {window_days} days ({window_start.strftime('%d %b')} – {today.strftime('%d %b %Y')})")
+    lines.append("")
+
+    # ── Current status ──────────────────────────────────────
+    lines.append("## Current Status")
+    if not daily.empty:
+        latest = daily.sort_values("date").iloc[-1]
+        mult   = float(latest.get("meta_multiplier", 1.0) or 1.0)
+        lines.append(f"**Latest entry:** {latest['date']}  ")
+        lines.append(f"**Meta force multiplier:** ×{mult:.2f}" +
+                     (" ⚡ active" if mult > 1.05 else " (baseline)"))
+        lines.append("")
+        lines.append("| Domain | Score | Raw | Band | vs Baseline |")
+        lines.append("|--------|-------|-----|------|-------------|")
+        for d in DOMAINS:
+            score = float(latest.get(f"{d} Score %", 0) or 0)
+            raw   = float(latest.get(f"{d} Score % (raw)", score) or score)
+            band  = classify_score(score, d, bands)
+            pb    = personal_bl.get(d, {})
+            vs_bl = (f"{score - pb['mean']:+.1f}pp vs baseline"
+                     if pb.get("reliable") and pb.get("mean") is not None else "—")
+            lines.append(f"| {d} | {score:.1f}% | {raw:.1f}% | {band.upper()} | {vs_bl} |")
+    else:
+        lines.append("*No daily data available.*")
+    lines.append("")
+
+    # ── Recent trends ───────────────────────────────────────
+    lines.append("## Domain Trends (last 30 days)")
+    period = daily[daily["date"] >= window_start] if not daily.empty else daily
+    if not period.empty:
+        lines.append("| Domain | Mean % | Peak % | Days in Well | Days in Watch+ | Days in Warning+ |")
+        lines.append("|--------|--------|--------|-------------|----------------|-----------------|")
+        for d in DOMAINS:
+            col = f"{d} Score %"
+            if col not in period.columns:
+                continue
+            scores    = period[col].dropna()
+            mean_s    = scores.mean()
+            peak_s    = scores.max()
+            n_well    = int((scores.apply(lambda s: classify_score(s, d, bands) == "well")).sum())
+            n_watch   = int((scores.apply(lambda s: classify_score(s, d, bands) in ["watch","caution","warning","critical"])).sum())
+            n_warning = int((scores.apply(lambda s: classify_score(s, d, bands) in ["warning","critical"])).sum())
+            lines.append(f"| {d} | {mean_s:.1f}% | {peak_s:.1f}% | {n_well} | {n_watch} | {n_warning} |")
+    else:
+        lines.append("*No data in this period.*")
+    lines.append("")
+
+    # ── Personal baseline ───────────────────────────────────
+    lines.append("## Personal Baseline")
+    lines.append("*(Computed from days where all domains were in the Well band)*")
+    lines.append("")
+    for d in DOMAINS:
+        pb = personal_bl.get(d, {})
+        if pb.get("reliable"):
+            lines.append(f"- **{d}:** mean {pb['mean']}%, ±1 SD {pb['lower']}–{pb['upper']}% "
+                         f"(based on {pb['n']} well days)")
+        else:
+            lines.append(f"- **{d}:** baseline not yet reliable ({pb.get('n',0)} well days recorded)")
+    lines.append("")
+
+    # ── Episodes ────────────────────────────────────────────
+    lines.append("## Labelled Episodes")
+    if not episodes.empty:
+        recent_ep = episodes[
+            pd.to_datetime(episodes["end_date"]) >= pd.Timestamp(window_start)
+        ]
+        if not recent_ep.empty:
+            for _, ep in recent_ep.sort_values("start_date", ascending=False).iterrows():
+                lines.append(
+                    f"- **{ep['episode_type']}** — "
+                    f"{ep['start_date']} to {ep['end_date']}"
+                    + (f": {ep['notes']}" if ep.get("notes") else "")
+                )
+        else:
+            lines.append("*No episodes ending in this period.*")
+    else:
+        lines.append("*No episodes labelled yet.*")
+    lines.append("")
+
+    # ── Medication notes ────────────────────────────────────
+    lines.append("## Medication Notes")
+    if not med_notes.empty:
+        recent_med = med_notes[med_notes["date"] >= window_start] if not med_notes.empty else med_notes
+        if not recent_med.empty:
+            for _, m in recent_med.sort_values("submitted_at", ascending=False).iterrows():
+                lines.append(f"- **{m['date']}:** {m['medication_notes']}")
+        else:
+            lines.append("*No medication notes in this period.*")
+    else:
+        lines.append("*No medication notes recorded.*")
+    lines.append("")
+
+    # ── Journal highlights ──────────────────────────────────
+    lines.append("## Journal Highlights")
+    lines.append("*(Entries from days in Caution band or above)*")
+    if not notes.empty:
+        elevated = notes[notes["worst_band"].isin(["caution","warning","critical"])]
+        recent_notes = elevated[elevated["date"] >= window_start] if not elevated.empty else elevated
+        if not recent_notes.empty:
+            for _, n in recent_notes.sort_values("submitted_at", ascending=False).head(10).iterrows():
+                band = n.get("worst_band","")
+                text = str(n.get("experience_description",""))[:300]
+                lines.append(f"- **{n['date']}** [{band.upper()}]: {text}" +
+                             ("…" if len(str(n.get("experience_description",""))) > 300 else ""))
+        else:
+            lines.append("*No elevated-band journal entries in this period.*")
+    else:
+        lines.append("*No journal entries.*")
+    lines.append("")
+
+    # ── Footer ──────────────────────────────────────────────
+    lines.append("---")
+    lines.append("*This summary was generated automatically from self-reported daily monitoring data. "
+                 "It is intended to support clinical conversation, not to replace clinical judgement.*")
+
+    return "\n".join(lines)
+
 def _generate_insights(daily, risk, trends, bands, personal, movement_threshold) -> list[dict]:
     insights: list[dict] = []
+
+    # Active multiplier — surface prominently when non-trivial
+    if not daily.empty and "meta_multiplier" in daily.columns:
+        latest_mult = float(daily.sort_values("date").iloc[-1].get("meta_multiplier", 1.0) or 1.0)
+        if latest_mult >= 1.20:
+            insights.append(dict(level="warning", domain="Meta",
+                text=f"**Meta force multiplier is ×{latest_mult:.2f}** — meta questions signal "
+                     f"strong intensification or a sense of approaching episode. "
+                     f"All domain scores are amplified by this factor."))
+        elif latest_mult >= 1.10:
+            insights.append(dict(level="caution", domain="Meta",
+                text=f"**Meta force multiplier is ×{latest_mult:.2f}** — mild amplification "
+                     f"active (intensifying state or feeling unlike yourself)."))
+
     for domain in DOMAINS:
         r    = risk.get(domain, 0)
         t    = trends.get(domain, "stable")
@@ -1082,8 +1531,10 @@ wide_df      = clean_and_widen(indexed_df)
 daily_df     = build_scored_table(wide_df, weights, daily_only=True)
 snapshots_df = build_scored_table(wide_df, weights, daily_only=False)
 warnings_df  = build_warnings(daily_df, snapshots_df, bands, mv_threshold)
-personal_bl  = compute_personal_baseline(daily_df, bands, pb_window)
+episodes_df  = load_episodes()
+personal_bl  = compute_personal_baseline(daily_df, bands, pb_window, episodes=episodes_df)
 notes_df     = build_notes_df(wide_df, daily_df, bands)
+med_notes_df = build_med_notes_df(wide_df, daily_df)
 
 # ──────────────────────────────────────────────────────────
 # GLOBAL FILTERS (sidebar)
@@ -1091,6 +1542,21 @@ notes_df     = build_notes_df(wide_df, daily_df, bands)
 with st.sidebar:
     st.markdown("## Filters")
     st.caption("Applied to all charts and tables.")
+
+    # Refresh control
+    import datetime as _dt
+    if "last_refreshed" not in st.session_state:
+        st.session_state["last_refreshed"] = _dt.datetime.now()
+    elapsed = int((_dt.datetime.now() - st.session_state["last_refreshed"]).total_seconds())
+    st.caption(f"Data last refreshed {elapsed}s ago")
+    if st.button("🔄 Refresh data", use_container_width=True):
+        load_sheet.clear()
+        load_episodes.clear()
+        load_weights.clear()
+        load_baseline_config.clear()
+        st.session_state["last_refreshed"] = _dt.datetime.now()
+        st.rerun()
+    st.divider()
 
     if not daily_df.empty:
         min_date = daily_df["date"].min()
@@ -1148,22 +1614,36 @@ else:
 # DOMAIN STATUS ROW
 if not daily_df.empty:
     latest = daily_df.sort_values("date").iloc[-1]
+    latest_multiplier = float(latest.get("meta_multiplier", 1.0) or 1.0)
+    multiplier_note = (
+        f"  \n⚡ *Meta multiplier: ×{latest_multiplier:.2f}*"
+        if latest_multiplier > 1.05 else ""
+    )
     status_cols = st.columns(len(DOMAINS))
     for i, domain in enumerate(DOMAINS):
-        score = float(latest.get(f"{domain} Score %", 0) or 0)
-        band  = classify_score(score, domain, bands)
-        delta = float(latest.get(f"{domain} Score % Delta", 0) or 0)
-        pb    = personal_bl.get(domain, {})
-        pb_note = ""
+        score     = float(latest.get(f"{domain} Score %", 0) or 0)
+        raw_score = float(latest.get(f"{domain} Score % (raw)", score) or score)
+        band      = classify_score(score, domain, bands)
+        delta     = float(latest.get(f"{domain} Score % Delta", 0) or 0)
+        pb        = personal_bl.get(domain, {})
+        pb_note   = ""
         if pb.get("reliable") and pb.get("mean") is not None:
-            diff = score - pb["mean"]
+            diff    = score - pb["mean"]
             pb_note = f"\n*vs baseline: {diff:+.1f}pp*"
-        streak = _consecutive_days_in_band(daily_df, domain, bands, ["caution","warning","critical"])
+        streak      = _consecutive_days_in_band(daily_df, domain, bands, ["caution","warning","critical"])
         streak_note = f"\n*{streak}d elevated streak*" if streak >= 2 else ""
+        raw_note    = f"\n*raw: {raw_score:.1f}%*" if latest_multiplier > 1.05 else ""
         status_cols[i].markdown(
             f"**{domain}**  \n"
             f"{BAND_EMOJI[band]} **{band.upper()}** — {score:.1f}%  \n"
-            f"Δ {delta:+.1f}pp{pb_note}{streak_note}"
+            f"Δ {delta:+.1f}pp{raw_note}{pb_note}{streak_note}"
+        )
+    if latest_multiplier > 1.05:
+        st.caption(
+            f"⚡ **Meta force multiplier active: ×{latest_multiplier:.2f}** — "
+            f"domain scores are amplified because meta questions signal "
+            f"intensification, approaching episode, or feeling unlike yourself. "
+            f"Raw (pre-multiplier) scores shown in italics above."
         )
 
 st.divider()
@@ -1172,8 +1652,11 @@ st.divider()
 # TABS
 # ──────────────────────────────────────────────────────────
 (tab_overview, tab_snapshots_tab, tab_analysis,
- tab_baseline, tab_journal, tab_daily, tab_data, tab_settings) = st.tabs([
-    "Overview", "Snapshots", "Analysis", "Baselines", "Journal", "Daily Model", "Data Layer", "Settings"
+ tab_baseline, tab_journal, tab_episodes, tab_export,
+ tab_questions, tab_daily, tab_data, tab_settings) = st.tabs([
+    "Overview", "Snapshots", "Analysis", "Baselines",
+    "Journal", "Episodes", "Clinician Export",
+    "Questions", "Daily Model", "Data Layer", "Settings"
 ])
 
 # ── OVERVIEW ──────────────────────────────────────────────
@@ -1216,6 +1699,20 @@ with tab_overview:
             b = bands.get(d, DEFAULT_BASELINE_BANDS.get(d, {}))
             fig_all.add_hline(y=b.get("well", 20), line_dash="dot",
                               line_color="rgba(52,199,89,0.35)", line_width=1)
+
+        # Episode overlays on the all-domains chart
+        fig_all = add_episode_overlays(fig_all, episodes_df)
+
+        # Medication markers on the all-domains chart
+        if not med_notes_df.empty:
+            med_in_range = med_notes_df[
+                (med_notes_df["date"] >= filter_start) &
+                (med_notes_df["date"] <= filter_end)
+            ] if filter_start else med_notes_df
+            for _, m in med_in_range.iterrows():
+                note_text = str(m.get("medication_notes",""))[:35]
+                fig_all = _add_vline_date(fig_all, x=str(m["date"]), label=f"💊 {note_text}")
+
         fig_all.update_layout(
             height=chart_height, margin=dict(l=10, r=10, t=10, b=10),
             yaxis=dict(range=[0, 100], title="Score %", ticksuffix="%"),
@@ -1224,6 +1721,12 @@ with tab_overview:
             plot_bgcolor="white", paper_bgcolor="white",
         )
         st.plotly_chart(fig_all, use_container_width=True)
+
+        # Medication change markers on the overview chart
+        if not med_notes_df.empty:
+            med_in_range = med_notes_df[med_notes_df["date"] >= filter_start] if filter_start else med_notes_df
+            if not med_in_range.empty:
+                st.caption("💊 Vertical dashed lines on the chart above mark days with medication notes.")
 
         st.markdown("### Per-domain charts")
         c1, c2 = st.columns(2)
@@ -1234,6 +1737,8 @@ with tab_overview:
                                     personal=personal_bl,
                                     movement_threshold=mv_threshold,
                                     show_rolling=show_rolling,
+                                    episodes=episodes_df,
+                                    med_notes=med_notes_df,
                                     height=chart_height),
                     use_container_width=True,
                 )
@@ -1501,15 +2006,184 @@ with tab_journal:
                 st.markdown(f"*Keywords: {kw_tags}*")
             st.divider()
 
+    # Medication notes section
+    st.markdown("## Medication Notes")
+    st.caption("Days where medication changes were reported via the form.")
+    med_filtered = _apply_date_filter(med_notes_df, "date") if not med_notes_df.empty else med_notes_df
+    if med_filtered.empty:
+        st.info("No medication notes in the selected date range.")
+    else:
+        for _, m in med_filtered.iterrows():
+            date_str  = str(m.get("date",""))
+            note_text = str(m.get("medication_notes",""))
+            # Show domain scores for context
+            domain_ctx = []
+            for d in DOMAINS:
+                sc = m.get(f"{d} Score %")
+                if sc is not None and not (isinstance(sc, float) and np.isnan(sc)):
+                    b = classify_score(sc, d, bands)
+                    domain_ctx.append(f"{d}: {sc:.0f}% ({b})")
+            ctx_str = " · ".join(domain_ctx) if domain_ctx else ""
+            st.markdown(
+                f"""<div style="
+                    border-left: 4px solid rgba(0,150,100,0.8);
+                    padding: 10px 16px;
+                    margin-bottom: 10px;
+                    border-radius: 4px;
+                    background: rgba(0,150,100,0.06);
+                ">
+                <strong>💊 {date_str}</strong>
+                &nbsp;&nbsp;<span style="color:#666;font-size:0.85em">{ctx_str}</span>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+            st.markdown(note_text)
+            st.divider()
+
+# ── EPISODES ──────────────────────────────────────────────
+with tab_episodes:
+    st.markdown("## Episode Labelling")
+    st.caption(
+        "Label historical periods as episodes. These appear as shaded regions on all "
+        "domain charts and are used to exclude episode periods from the personal baseline. "
+        "Requires a Google Sheet tab named **Episode Log** with columns: "
+        "`episode_id, episode_type, start_date, end_date, notes`."
+    )
+
+    ws_exists = safe_worksheet(EPISODE_TAB) is not None
+    if not ws_exists:
+        st.warning(
+            f"Worksheet '{EPISODE_TAB}' not found. Create a tab with that exact name "
+            "in your Google Sheet, then episode saving will work."
+        )
+
+    # Add new episode form
+    st.markdown("### Add episode")
+    with st.form("add_episode_form"):
+        fc1, fc2, fc3 = st.columns([2, 2, 3])
+        ep_type  = fc1.selectbox("Episode type", EPISODE_TYPES, key="ep_type")
+        ep_start = fc2.date_input("Start date", key="ep_start")
+        ep_end   = fc3.date_input("End date",   key="ep_end")
+        ep_notes = st.text_input("Notes (optional)", placeholder="e.g. hospitalisation, triggered by sleep deprivation…", key="ep_notes")
+        submitted = st.form_submit_button("Add episode", type="primary")
+        if submitted:
+            if ep_end < ep_start:
+                st.error("End date must be on or after start date.")
+            else:
+                ok, msg = add_episode(ep_type, ep_start, ep_end, ep_notes)
+                if ok:
+                    st.success(f"Episode added. {msg}")
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+    st.divider()
+
+    # Existing episodes
+    st.markdown("### Labelled episodes")
+    episodes_df = load_episodes()  # refresh after potential add
+    if episodes_df.empty:
+        st.info("No episodes labelled yet.")
+    else:
+        ep_colour_map = {"Depressive":"🔴","Hypomanic":"🟠","Manic":"🟡",
+                         "Mixed":"🔵","Psychotic":"🟣","Other":"⚪"}
+        for _, ep in episodes_df.sort_values("start_date", ascending=False).iterrows():
+            icon = ep_colour_map.get(ep["episode_type"], "⚪")
+            duration = (pd.Timestamp(ep["end_date"]) - pd.Timestamp(ep["start_date"])).days + 1
+            with st.container():
+                ec1, ec2 = st.columns([5, 1])
+                with ec1:
+                    st.markdown(
+                        f"{icon} **{ep['episode_type']}** — "
+                        f"{ep['start_date']} to {ep['end_date']} "
+                        f"({duration} day{'s' if duration != 1 else ''})"
+                        + (f"  \n*{ep['notes']}*" if ep.get("notes") else "")
+                    )
+                with ec2:
+                    if st.button("Delete", key=f"del_{ep['episode_id']}"):
+                        ok, msg = delete_episode(ep["episode_id"])
+                        if ok:
+                            st.rerun()
+                        else:
+                            st.error(msg)
+            st.divider()
+
+    # Episode context chart — domain scores around each episode
+    if not episodes_df.empty and not daily_df.empty:
+        st.markdown("### Domain scores around each episode")
+        st.caption("Shows scores in the 14 days before, during, and after each labelled episode.")
+        for _, ep in episodes_df.sort_values("start_date", ascending=False).iterrows():
+            start = pd.Timestamp(ep["start_date"])
+            end   = pd.Timestamp(ep["end_date"])
+            window_start_ep = (start - pd.Timedelta(days=14)).date()
+            window_end_ep   = (end   + pd.Timedelta(days=14)).date()
+            ep_window = daily_df[
+                (daily_df["date"] >= window_start_ep) &
+                (daily_df["date"] <= window_end_ep)
+            ].copy()
+            if ep_window.empty:
+                continue
+            with st.expander(f"{ep['episode_type']} — {ep['start_date']} to {ep['end_date']}", expanded=False):
+                fig_ep = make_overview_chart(ep_window, bands, height=280)
+                # Add the episode shading
+                single_ep = episodes_df[episodes_df["episode_id"] == ep["episode_id"]]
+                fig_ep = add_episode_overlays(fig_ep, single_ep)
+                st.plotly_chart(fig_ep, use_container_width=True)
+
+# ── CLINICIAN EXPORT ──────────────────────────────────────
+with tab_export:
+    st.markdown("## Clinician Export")
+    st.caption(
+        "A structured summary covering the last 30 days, designed to support "
+        "clinical appointments. Copy the text below or save it manually."
+    )
+
+    exp_col1, exp_col2 = st.columns([2, 1])
+    with exp_col1:
+        export_window = st.slider("Days to cover", 7, 90, 30, 7, key="export_window")
+    with exp_col2:
+        st.markdown("&nbsp;")  # spacer
+
+    report = generate_clinician_report(
+        daily=daily_df,
+        bands=bands,
+        personal_bl=personal_bl,
+        episodes=episodes_df,
+        notes=notes_df,
+        med_notes=med_notes_df,
+        weights=weights,
+        window_days=export_window,
+    )
+
+    # Rendered preview
+    with st.expander("Preview (rendered)", expanded=True):
+        st.markdown(report)
+
+    # Raw copyable text
+    st.markdown("### Copy-ready text")
+    st.text_area(
+        "Select all and copy (Ctrl+A, Ctrl+C)",
+        value=report,
+        height=400,
+        key="export_text",
+    )
+
 # ── BASELINES ─────────────────────────────────────────────
 with tab_baseline:
     st.markdown("## Baselines")
 
     st.markdown("### Your personal baseline")
+    ep_exclusion_note = ""
+    if not episodes_df.empty:
+        n_ep_days = sum(
+            (pd.Timestamp(ep["end_date"]) - pd.Timestamp(ep["start_date"])).days + 1
+            for _, ep in episodes_df.iterrows()
+        )
+        ep_exclusion_note = f" Episode periods are excluded ({n_ep_days} labelled episode days removed)."
     st.caption(
         f"Derived from days where **all** domains were in the Well band. "
         f"Uses the most recent **{pb_window}** such days. "
-        f"Requires **{PERSONAL_BASELINE_MIN_DAYS}+** days to be reliable."
+        f"Requires **{PERSONAL_BASELINE_MIN_DAYS}+** days to be reliable.{ep_exclusion_note}"
     )
     pb_cols = st.columns(len(DOMAINS))
     for i, domain in enumerate(DOMAINS):
@@ -1539,6 +2213,7 @@ with tab_baseline:
             st.plotly_chart(
                 make_band_chart(daily_filtered, domain, bands, personal=personal_bl,
                                 movement_threshold=mv_threshold, show_rolling=show_rolling,
+                                episodes=episodes_df, med_notes=med_notes_df,
                                 height=300),
                 use_container_width=True,
             )
@@ -1567,6 +2242,275 @@ with tab_baseline:
     mv_threshold = bl_config["movement_threshold"]
     pb_window    = bl_config["personal_baseline_window"]
 
+# ── QUESTIONS ─────────────────────────────────────────────
+with tab_questions:
+    st.markdown("## Form Questions")
+    st.caption(
+        "All questions from the monitoring form, organised by group. "
+        "Click **📈 Chart** on any question to see how your answers have changed over time."
+    )
+
+    # ── helper: build a per-question answer chart ──────────
+    def _question_chart(code: str, meta: dict, daily: pd.DataFrame,
+                        wide: pd.DataFrame, episodes: pd.DataFrame) -> go.Figure:
+        """
+        Return a Plotly figure showing raw answer values over time for one question.
+        - scale_1_5 / numeric  → line chart on daily (first-of-day) values
+        - boolean_yes_no       → stacked bar: Yes / No count per day
+        - text                 → not charted (handled separately)
+        """
+        rtype = meta.get("rtype", "")
+
+        if rtype == "text":
+            return go.Figure()
+
+        if rtype == "boolean_yes_no":
+            if code not in wide.columns:
+                return go.Figure()
+            bool_data = wide[["submitted_date", code]].copy()
+            bool_data[code] = bool_data[code].astype(bool)
+            counts = (
+                bool_data.groupby(["submitted_date", code])
+                .size().reset_index(name="count")
+            )
+            yes_c = counts[counts[code] == True].set_index("submitted_date")["count"]
+            no_c  = counts[counts[code] == False].set_index("submitted_date")["count"]
+            all_dates = sorted(bool_data["submitted_date"].unique())
+            yes_vals = [int(yes_c.get(d, 0)) for d in all_dates]
+            no_vals  = [int(no_c.get(d, 0))  for d in all_dates]
+            date_strs = [str(d) for d in all_dates]
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=date_strs, y=yes_vals, name="Yes",
+                marker_color="rgba(255,59,48,0.7)",
+                hovertemplate="%{x}<br>Yes: %{y}<extra></extra>",
+            ))
+            fig.add_trace(go.Bar(
+                x=date_strs, y=no_vals, name="No",
+                marker_color="rgba(142,142,147,0.4)",
+                hovertemplate="%{x}<br>No: %{y}<extra></extra>",
+            ))
+            fig.update_layout(
+                barmode="stack", height=260,
+                margin=dict(l=10, r=10, t=10, b=10),
+                yaxis=dict(title="Submissions", dtick=1),
+                xaxis=dict(title=None),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                plot_bgcolor="white", paper_bgcolor="white",
+            )
+            fig = add_episode_overlays(fig, episodes)
+            return fig
+
+        # scale_1_5 or numeric — use daily (first of day) values
+        if code not in daily.columns:
+            return go.Figure()
+
+        plot_daily = daily[["date", code]].dropna(subset=[code]).copy()
+        if plot_daily.empty:
+            return go.Figure()
+
+        date_strs = plot_daily["date"].astype(str).tolist()
+        values    = plot_daily[code].tolist()
+
+        # Rolling average
+        rolling = plot_daily[code].rolling(7, min_periods=1).mean().tolist()
+
+        # y-axis range
+        if rtype == "scale_1_5":
+            y_range = [0.5, 5.5]
+            y_title = "Rating (1–5)"
+            tick_vals = [1, 2, 3, 4, 5]
+            tick_text = ["1\nNot at all", "2", "3\nModerate", "4", "5\nExtreme"]
+        else:
+            y_range = None
+            y_title = "Value"
+            tick_vals = None
+            tick_text = None
+
+        fig = go.Figure()
+
+        # Episode shading behind everything
+        fig = add_episode_overlays(fig, episodes)
+
+        # 7-day rolling average
+        fig.add_trace(go.Scatter(
+            x=date_strs, y=rolling, mode="lines",
+            name="7d avg",
+            line=dict(color="rgba(100,100,100,0.4)", width=1.5, dash="dash"),
+            hovertemplate="7d avg: %{y:.2f}<extra></extra>",
+        ))
+
+        # Raw values
+        domain_list = meta.get("domains", [])
+        colour = DOMAIN_COLOURS.get(domain_list[0], "#1C7EF2") if domain_list else "#1C7EF2"
+        fig.add_trace(go.Scatter(
+            x=date_strs, y=values, mode="lines+markers",
+            name="Daily value",
+            line=dict(color=colour, width=2),
+            marker=dict(size=5, color=colour),
+            hovertemplate="%{x}<br>Value: %{y}<extra></extra>",
+        ))
+
+        yaxis_cfg = dict(title=y_title)
+        if y_range:
+            yaxis_cfg["range"] = y_range
+        if tick_vals:
+            yaxis_cfg["tickvals"] = tick_vals
+            yaxis_cfg["ticktext"] = tick_text
+
+        fig.update_layout(
+            height=260,
+            margin=dict(l=10, r=10, t=10, b=10),
+            yaxis=yaxis_cfg,
+            xaxis=dict(title=None),
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            plot_bgcolor="white", paper_bgcolor="white",
+        )
+        return fig
+
+    # ── group display config ────────────────────────────────
+    GROUP_LABELS = {
+        "depression":   "🔵 Depression",
+        "mania":        "🟠 Mania",
+        "mixed":        "🔀 Mixed",
+        "psychosis":    "🟣 Psychosis",
+        "functioning":  "⚙️ Functioning",
+        "meta":         "🧠 Meta / Self-observation",
+        "flags":        "🚩 Flags",
+        "observations": "👁 Observations",
+        "notes":        "📝 Notes",
+    }
+    GROUP_ORDER = [
+        "depression", "mania", "mixed", "psychosis",
+        "functioning", "meta", "flags", "observations", "notes",
+    ]
+
+    ROLE_BADGES = {
+        "force_multiplier":           "⚡ Force multiplier",
+        "insight_inverse_psychosis":  "🔄 Insight-inverse (Psychosis)",
+        "contributor":                "➕ Domain contributor",
+    }
+    RTYPE_LABELS = {
+        "scale_1_5":      "Scale 1–5",
+        "boolean_yes_no": "Yes / No",
+        "numeric":        "Number",
+        "text":           "Free text",
+    }
+
+    by_code = _catalog_by_code()
+    cat     = catalog_df()
+
+    # Track which question is charted via session state
+    if "q_chart_code" not in st.session_state:
+        st.session_state["q_chart_code"] = None
+
+    # Search box
+    q_search = st.text_input(
+        "Search questions", placeholder="e.g. sleep, mood, agitation…",
+        key="q_search"
+    )
+
+    st.divider()
+
+    for group in GROUP_ORDER:
+        group_qs = cat[cat["group"] == group].sort_values("order")
+        if group_qs.empty:
+            continue
+        if q_search:
+            group_qs = group_qs[
+                group_qs["text"].str.contains(q_search, case=False, na=False) |
+                group_qs["code"].str.contains(q_search, case=False, na=False)
+            ]
+            if group_qs.empty:
+                continue
+
+        label = GROUP_LABELS.get(group, group.title())
+        with st.expander(f"{label}  ({len(group_qs)} questions)", expanded=not bool(q_search)):
+            for _, q_row in group_qs.iterrows():
+                code  = q_row["code"]
+                text  = q_row["text"]
+                rtype = q_row.get("rtype","")
+                role  = q_row.get("meta_role", None)
+                domains = q_row.get("domains", [])
+                if isinstance(domains, str):
+                    # catalog_df serialises lists as strings sometimes
+                    import ast
+                    try:
+                        domains = ast.literal_eval(domains)
+                    except Exception:
+                        domains = []
+
+                # ── Question header row ──────────────────────
+                hc1, hc2 = st.columns([5, 1])
+                with hc1:
+                    st.markdown(f"**{text}**")
+                    # Metadata badges in one line
+                    badges = []
+                    badges.append(f"`{RTYPE_LABELS.get(rtype, rtype)}`")
+                    if domains:
+                        for d in domains:
+                            colour_hex = BAND_COLOUR_HEX.get(
+                                classify_score(50, d, bands), "#888"
+                            )
+                            badges.append(f"`{d}`")
+                    if role:
+                        badges.append(f"`{ROLE_BADGES.get(role, role)}`")
+                    # Weight info
+                    base_w = DEFAULT_WEIGHTS.get(code)
+                    if base_w is not None:
+                        badges.append(f"weight `{base_w}`")
+                    st.caption("  ".join(badges))
+
+                with hc2:
+                    btn_label = "📉 Hide" if st.session_state["q_chart_code"] == code else "📈 Chart"
+                    if rtype == "text":
+                        st.caption("*Free text*")
+                    else:
+                        if st.button(btn_label, key=f"qbtn_{code}", use_container_width=True):
+                            if st.session_state["q_chart_code"] == code:
+                                st.session_state["q_chart_code"] = None
+                            else:
+                                st.session_state["q_chart_code"] = code
+
+                # ── Chart (shown inline when this question is active) ──
+                if st.session_state["q_chart_code"] == code:
+                    meta_entry = by_code.get(code, {})
+                    fig = _question_chart(code, meta_entry, daily_filtered, wide_df, episodes_df)
+                    if fig.data or fig.layout.shapes:
+                        # Summary stats
+                        if code in daily_filtered.columns and rtype != "text":
+                            vals = pd.to_numeric(daily_filtered[code], errors="coerce").dropna()
+                            if not vals.empty and rtype == "boolean_yes_no":
+                                pct_yes = int(vals.astype(bool).mean() * 100)
+                                sc1, sc2 = st.columns(2)
+                                sc1.metric("Days answered Yes", f"{vals.astype(bool).sum()} / {len(vals)}")
+                                sc2.metric("% Yes", f"{pct_yes}%")
+                            elif not vals.empty:
+                                sc1, sc2, sc3, sc4 = st.columns(4)
+                                sc1.metric("Mean", f"{vals.mean():.2f}")
+                                sc2.metric("Peak", f"{vals.max():.0f}")
+                                sc3.metric("Days recorded", len(vals))
+                                # % of days answered at 4 or 5
+                                if rtype == "scale_1_5":
+                                    pct_high = int((vals >= 4).mean() * 100)
+                                    sc4.metric("% days rated 4–5", f"{pct_high}%")
+                        st.plotly_chart(fig, use_container_width=True, key=f"qfig_{code}")
+
+                        # For boolean: show dates when it was Yes
+                        if rtype == "boolean_yes_no" and code in wide_df.columns:
+                            yes_dates = wide_df[wide_df[code] == True]["submitted_date"].unique()
+                            if len(yes_dates):
+                                with st.expander(f"All dates answered Yes ({len(yes_dates)})", expanded=False):
+                                    st.write(", ".join(str(d) for d in sorted(yes_dates)))
+                    else:
+                        if rtype == "text":
+                            st.info("Free text — see the Journal tab for entries.")
+                        else:
+                            st.info("No data recorded for this question yet.")
+
+                st.divider()
+
 # ── DAILY MODEL ───────────────────────────────────────────
 with tab_daily:
     st.markdown("### Daily model — first submission per day")
@@ -1581,8 +2525,52 @@ with tab_daily:
 with tab_data:
     st.markdown("### Question catalog")
     display_cols = ["code","text","group","rtype","polarity","domains","score_in_snapshot","score_in_daily","order"]
-    st.dataframe(catalog_df()[display_cols], use_container_width=True)
+    cat_display = catalog_df()
+    # Add meta_role column if present
+    if "meta_role" in cat_display.columns:
+        display_cols = ["code","text","group","meta_role","rtype","polarity","domains","order"]
+    st.dataframe(cat_display[[c for c in display_cols if c in cat_display.columns]], use_container_width=True)
 
+    st.divider()
+    st.markdown("### Meta question system")
+    st.caption(
+        "Meta questions operate at two levels: **force multipliers** amplify all domain "
+        "scores after calculation; **contributors** feed directly into domain scores; "
+        "**insight-inverse** items contribute normally to Depression/Mania/Mixed but are "
+        "**inverted in Psychosis** (low concern/insight = higher psychosis risk)."
+    )
+
+    meta_ref = []
+    for q in QUESTION_CATALOG:
+        role = q.get("meta_role")
+        if not role:
+            continue
+        if role == "force_multiplier":
+            description = f"Force multiplier — amplifies all domain scores ×1.0–×{META_MULTIPLIER_MAX}. Not a domain contributor."
+        elif role == "insight_inverse_psychosis":
+            description = "Insight item — contributes normally to Dep/Mania/Mixed. INVERTED in Psychosis (low insight = higher risk)."
+        elif role == "contributor":
+            description = f"Direct contributor to: {', '.join(q.get('domains', []))}"
+        else:
+            description = role
+        meta_ref.append({
+            "Code": q["code"],
+            "Question (short)": q["text"][:60] + ("…" if len(q["text"]) > 60 else ""),
+            "Role": role,
+            "Domains": ", ".join(q.get("domains", [])) or "—",
+            "Description": description,
+        })
+    st.dataframe(pd.DataFrame(meta_ref), use_container_width=True, hide_index=True)
+
+    st.caption(
+        f"**Multiplier formula:** composite of {', '.join(FORCE_MULTIPLIER_CODES)} "
+        f"→ mean normalised score (0–100) → mapped to ×1.0–×{META_MULTIPLIER_MAX}. "
+        f"A score of 50/100 on all three items → multiplier of "
+        f"×{1.0 + 0.5 * (META_MULTIPLIER_MAX - 1.0):.2f}. "
+        f"All domain scores capped at 100 after multiplication."
+    )
+
+    st.divider()
     st.markdown("### Sleep weight multipliers by domain")
     mlt_rows = []
     for domain in DOMAINS:
