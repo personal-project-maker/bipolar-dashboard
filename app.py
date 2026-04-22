@@ -1617,6 +1617,183 @@ def generate_clinician_report(
 
     return "\n".join(lines)
 
+# ──────────────────────────────────────────────────────────
+# PSYCHOSIS INSIGHT DIVERGENCE DETECTOR
+# ──────────────────────────────────────────────────────────
+# Primary psychosis symptom items — these capture the experiences themselves
+PSY_PRIMARY_CODES = [
+    "psy_heard_saw",        # hallucinations
+    "psy_suspicious",       # paranoia / persecutory thinking
+    "psy_trust_perceptions",# derealisation / derealization
+    "psy_distress",         # distress caused by experiences
+]
+
+# Insight items — these capture awareness that something is wrong
+# In our model these are inverted in the Psychosis domain, but here we
+# read them at face value: high = good insight, low = poor insight
+PSY_INSIGHT_CODES = [
+    "meta_something_wrong",  # "do I think something may be wrong?"
+    "meta_concerned",        # "am I concerned about my current state?"
+    "psy_confidence_reality",# "how confident have I been in the reality of these experiences?"
+    # Note: psy_confidence_reality is already in the psychosis domain at face value
+    # (higher confidence in abnormal experiences = worse), so we re-read it inverted
+    # here as an insight proxy: lower confidence in those experiences = better insight
+]
+
+def _mean_normalised(row: pd.Series, codes: list[str], invert: bool = False) -> float | None:
+    """
+    Mean normalised score (0–100) for a set of scale_1_5 items in a row.
+    Returns None if no items are present.
+    invert=True flips the score (100 - score) before averaging.
+    """
+    by_code = _catalog_by_code()
+    scores = []
+    for code in codes:
+        if code not in row.index:
+            continue
+        raw = row[code]
+        v = pd.to_numeric(raw, errors="coerce")
+        if pd.isna(v):
+            continue
+        norm = float(min(max((v - 1.0) / 4.0 * 100.0, 0.0), 100.0))
+        scores.append(100.0 - norm if invert else norm)
+    return float(np.mean(scores)) if scores else None
+
+
+def detect_psychosis_insight_divergence(
+    daily: pd.DataFrame,
+    window: int = 7,
+    drop_threshold: float = 15.0,
+    divergence_threshold: float = 12.0,
+) -> dict:
+    """
+    Analyse the last `window` days of daily data to detect whether a fall
+    in psychosis scores reflects genuine improvement or possible loss of insight.
+
+    Returns a dict with:
+      status:       "improvement" | "ambiguous" | "loss_of_insight" | "stable" | "insufficient_data"
+      primary_delta:  change in mean primary symptom score over window (negative = falling)
+      insight_delta:  change in mean insight score over window (negative = falling = worse insight)
+      finding:        plain-English description
+      severity:       "ok" | "caution" | "warning"
+      days_analysed:  int
+    """
+    result = dict(
+        status="insufficient_data",
+        primary_delta=None,
+        insight_delta=None,
+        finding="Not enough data to assess psychosis insight divergence.",
+        severity="ok",
+        days_analysed=0,
+    )
+
+    if daily.empty or len(daily) < 3:
+        return result
+
+    recent = daily.sort_values("date").tail(window).copy()
+    n = len(recent)
+    result["days_analysed"] = n
+
+    # Compute per-row scores for primary symptoms and insight
+    # psy_confidence_reality: high score (confident in abnormal experiences) = bad,
+    # so we invert it to use as an insight proxy (low confidence = good insight = high score here)
+    primary_scores = recent.apply(
+        lambda r: _mean_normalised(r, PSY_PRIMARY_CODES, invert=False), axis=1
+    ).dropna()
+
+    insight_scores = recent.apply(
+        lambda r: _mean_normalised(
+            r,
+            # meta_something_wrong and meta_concerned: high = good insight (higher_worse scale,
+            # so high score means they think something IS wrong — that's good insight)
+            # psy_confidence_reality: high = bad insight, so invert it
+            ["meta_something_wrong", "meta_concerned"],
+            invert=False,
+        ),
+        axis=1,
+    ).dropna()
+
+    confidence_scores = recent.apply(
+        lambda r: _mean_normalised(r, ["psy_confidence_reality"], invert=True),
+        # inverted: high confidence in abnormal experiences → low insight score
+        axis=1,
+    ).dropna()
+
+    if len(primary_scores) < 2 or len(insight_scores) < 2:
+        return result
+
+    # Compute trend as (last third mean) - (first third mean)
+    def _trend(s: pd.Series) -> float:
+        third = max(1, len(s) // 3)
+        return float(s.tail(third).mean() - s.head(third).mean())
+
+    primary_delta = _trend(primary_scores)
+    insight_delta = _trend(insight_scores)   # negative = insight worsening
+    confidence_delta = _trend(confidence_scores) if len(confidence_scores) >= 2 else 0.0
+
+    result["primary_delta"] = round(primary_delta, 1)
+    result["insight_delta"] = round(insight_delta, 1)
+
+    primary_falling  = primary_delta  < -drop_threshold
+    insight_falling  = insight_delta  < -divergence_threshold
+    insight_stable   = abs(insight_delta) < divergence_threshold
+    insight_rising   = insight_delta  >  divergence_threshold
+    confidence_poor  = confidence_delta < -divergence_threshold  # less critical insight
+
+    if not primary_falling:
+        # Psychosis not falling — standard monitoring
+        result["status"]   = "stable"
+        result["finding"]  = "Psychosis scores are not falling. No divergence to assess."
+        result["severity"] = "ok"
+        return result
+
+    # Primary symptoms ARE falling — now assess what insight is doing
+    if primary_falling and (insight_stable or insight_rising):
+        # Good sign: symptoms falling, insight holding or improving
+        result["status"]  = "improvement"
+        result["finding"] = (
+            f"Psychosis scores have fallen (~{abs(primary_delta):.0f}pp over {n} days) "
+            f"and insight indicators are {'holding steady' if insight_stable else 'improving'}. "
+            f"This pattern is consistent with genuine improvement."
+        )
+        result["severity"] = "ok"
+
+    elif primary_falling and insight_falling and not confidence_poor:
+        # Ambiguous: symptoms and insight both falling, but confidence not dramatically shifted
+        result["status"]  = "ambiguous"
+        result["finding"] = (
+            f"Psychosis scores have fallen (~{abs(primary_delta):.0f}pp over {n} days), "
+            f"but insight indicators have also declined (~{abs(insight_delta):.0f}pp). "
+            f"It is unclear whether this reflects genuine improvement or reduced awareness "
+            f"of ongoing experiences. Worth discussing with your clinician."
+        )
+        result["severity"] = "caution"
+
+    elif primary_falling and insight_falling and confidence_poor:
+        # Most concerning: symptoms falling, insight falling, and confidence in
+        # the reality of experiences increasing — classic loss-of-insight picture
+        result["status"]  = "loss_of_insight"
+        result["finding"] = (
+            f"Psychosis scores have fallen (~{abs(primary_delta):.0f}pp over {n} days), "
+            f"but insight indicators have also declined significantly (~{abs(insight_delta):.0f}pp) "
+            f"and confidence in the reality of experiences appears to be increasing. "
+            f"This pattern may reflect loss of insight rather than genuine improvement — "
+            f"experiences may feel more real and less alarming, not because they are resolving. "
+            f"This warrants prompt clinical review."
+        )
+        result["severity"] = "warning"
+
+    else:
+        result["status"]  = "ambiguous"
+        result["finding"] = (
+            f"Psychosis scores have fallen (~{abs(primary_delta):.0f}pp over {n} days). "
+            f"The insight picture is mixed. Monitor closely."
+        )
+        result["severity"] = "caution"
+
+    return result
+
+
 def _generate_insights(daily, risk, trends, bands, personal, movement_threshold) -> list[dict]:
     insights: list[dict] = []
 
@@ -1632,6 +1809,22 @@ def _generate_insights(daily, risk, trends, bands, personal, movement_threshold)
             insights.append(dict(level="caution", domain="Meta",
                 text=f"**Meta force multiplier is ×{latest_mult:.2f}** — mild amplification "
                      f"active (intensifying state or feeling unlike yourself)."))
+
+    # Psychosis insight divergence
+    psy_divergence = detect_psychosis_insight_divergence(daily)
+    if psy_divergence["status"] not in ("stable", "insufficient_data", "improvement"):
+        insights.append(dict(
+            level=psy_divergence["severity"],
+            domain="Psychosis",
+            text=f"**Psychosis score interpretation:** {psy_divergence['finding']}",
+        ))
+    elif psy_divergence["status"] == "improvement":
+        # Surface positive finding too — reassurance is useful information
+        insights.append(dict(
+            level="ok",
+            domain="Psychosis",
+            text=f"✓ **Psychosis scores falling with insight intact** — {psy_divergence['finding']}",
+        ))
 
     for domain in DOMAINS:
         r    = risk.get(domain, 0)
@@ -2158,6 +2351,93 @@ with tab_analysis:
                 "Well Ceiling":      f"{bands.get(d, {}).get('well', '?')}%",
             })
         st.dataframe(pd.DataFrame(pb_rows), use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.markdown("### Psychosis insight analysis")
+        st.caption(
+            "A falling Psychosis score can mean two very different things: "
+            "genuine improvement, or loss of insight where experiences no longer "
+            "feel unusual or alarming. This section attempts to distinguish between them "
+            "by comparing primary symptom trends against insight indicator trends."
+        )
+
+        psy_div = detect_psychosis_insight_divergence(daily_filtered)
+
+        sev_colours = {
+            "ok":      ("#34C759", "🟢"),
+            "caution": ("#FF9500", "🟠"),
+            "warning": ("#FF3B30", "🔴"),
+        }
+        col_colour, col_emoji = sev_colours.get(psy_div["severity"], ("#8E8E93", "⚪"))
+        col_emoji_str = col_emoji
+
+        st.markdown(f"{col_emoji_str} **{psy_div['status'].replace('_', ' ').title()}**")
+        st.markdown(psy_div["finding"])
+
+        if psy_div["status"] not in ("insufficient_data", "stable"):
+            pd_cols = st.columns(3)
+            pd_cols[0].metric(
+                "Primary symptom trend",
+                f"{psy_div['primary_delta']:+.1f}pp" if psy_div["primary_delta"] is not None else "—",
+                help="Change in mean primary psychosis symptom score over the window. Negative = falling."
+            )
+            pd_cols[1].metric(
+                "Insight indicator trend",
+                f"{psy_div['insight_delta']:+.1f}pp" if psy_div["insight_delta"] is not None else "—",
+                help="Change in mean insight score over the window. Negative = insight worsening."
+            )
+            pd_cols[2].metric(
+                "Days analysed",
+                psy_div["days_analysed"],
+            )
+
+            # Chart: primary symptom score vs insight score over the window
+            if not daily_filtered.empty:
+                recent_w = daily_filtered.sort_values("date").tail(psy_div["days_analysed"]).copy()
+                insight_series = recent_w.apply(
+                    lambda r: _mean_normalised(r, ["meta_something_wrong", "meta_concerned"], invert=False),
+                    axis=1,
+                )
+                primary_series = recent_w.apply(
+                    lambda r: _mean_normalised(r, PSY_PRIMARY_CODES, invert=False),
+                    axis=1,
+                )
+                dates_w = recent_w["date"].astype(str).tolist()
+
+                fig_psy = go.Figure()
+                fig_psy.add_trace(go.Scatter(
+                    x=dates_w, y=primary_series.tolist(),
+                    mode="lines+markers", name="Primary symptoms",
+                    line=dict(color=DOMAIN_COLOURS["Psychosis"], width=2),
+                    hovertemplate="Primary: %{y:.1f}%<extra></extra>",
+                ))
+                fig_psy.add_trace(go.Scatter(
+                    x=dates_w, y=insight_series.tolist(),
+                    mode="lines+markers", name="Insight indicators",
+                    line=dict(color="#34C759", width=2, dash="dash"),
+                    hovertemplate="Insight: %{y:.1f}%<extra></extra>",
+                ))
+                fig_psy.update_layout(
+                    height=280,
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    yaxis=dict(range=[0, 100], title="Score %", ticksuffix="%"),
+                    xaxis=dict(title=None),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    plot_bgcolor="white", paper_bgcolor="white",
+                    title=dict(
+                        text="Primary symptoms vs insight indicators",
+                        font=dict(size=13, color="#1C1C1E"), x=0,
+                    ),
+                )
+                st.plotly_chart(fig_psy, use_container_width=True)
+                st.caption(
+                    "**Primary symptoms** (purple): mean of hallucinations, paranoia, "
+                    "trust in perceptions, distress.  \n"
+                    "**Insight indicators** (green dashed): mean of 'something may be wrong' "
+                    "and 'concerned about my state'.  \n"
+                    "When both fall together, review is needed. "
+                    "When primary falls but insight holds, improvement is more likely genuine."
+                )
 
         st.divider()
         st.markdown("### Cross-domain correlation")
