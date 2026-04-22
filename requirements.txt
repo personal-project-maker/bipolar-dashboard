@@ -5,3 +5,4 @@ pandas
 google-auth
 numpy
 plotly
+matplotlib
