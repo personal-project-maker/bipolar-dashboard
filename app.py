@@ -188,6 +188,7 @@ QUESTION_CATALOG: list[dict[str, Any]] = [
     # NOTES
     dict(code="experience_description", text="How would I describe my experiences?",                    group="notes", rtype="text", polarity="not_applicable", domains=[], order=470),
     dict(code="medication_notes",       text="Have there been any medication changes? If so, what?",    group="notes", rtype="text", polarity="not_applicable", domains=[], order=480),
+    dict(code="submission_type",        text="What kind of entry is this?",                             group="notes", rtype="text", polarity="not_applicable", domains=[], order=5),
 ]
 
 for _q in QUESTION_CATALOG:
@@ -322,6 +323,45 @@ def _psychosis_insight_score(row: pd.Series) -> float:
     return float(np.mean(scores)) if scores else 0.0
 
 # ──────────────────────────────────────────────────────────
+# SUBMISSION TYPE
+# ──────────────────────────────────────────────────────────
+# Values from the form question "What kind of entry is this?"
+SUBMISSION_TYPE_REVIEW   = "review"    # covers both "Review of today" and "Review of yesterday"
+SUBMISSION_TYPE_SNAPSHOT = "snapshot"
+
+# Weight applied to review submissions in the daily aggregate
+# Snapshots are 1.0 (ground truth); reviews are 0.5 (retrospective, subject to recall bias)
+REVIEW_WEIGHT   = 0.5
+SNAPSHOT_WEIGHT = 1.0
+
+def _classify_submission_type(row: pd.Series) -> str:
+    """
+    Classify a submission as 'review' or 'snapshot'.
+
+    Priority:
+    1. If the form field is filled, use it directly.
+    2. For historical data (no form field): if func_sleep_hours is present
+       and non-null, treat as review of yesterday; otherwise treat as snapshot.
+    """
+    # Check explicit form field first
+    st_val = str(row.get("submission_type", "") or "").strip().lower()
+    if "review" in st_val:
+        return SUBMISSION_TYPE_REVIEW
+    if "snapshot" in st_val:
+        return SUBMISSION_TYPE_SNAPSHOT
+
+    # Historical heuristic: sleep hours present → review
+    sleep = row.get("func_sleep_hours")
+    if sleep is not None and not (isinstance(sleep, float) and np.isnan(sleep)):
+        try:
+            if pd.notna(pd.to_numeric(sleep, errors="coerce")):
+                return SUBMISSION_TYPE_REVIEW
+        except Exception:
+            pass
+
+    return SUBMISSION_TYPE_SNAPSHOT
+
+# ──────────────────────────────────────────────────────────
 # RAW DATA PROCESSING
 # ──────────────────────────────────────────────────────────
 def _bool(value: Any) -> bool:
@@ -357,6 +397,9 @@ def clean_and_widen(df: pd.DataFrame) -> pd.DataFrame:
             wide[code] = pd.to_numeric(raw, errors="coerce")
         else:
             wide[code] = raw
+
+    # Derive a clean submission type column after all other columns are set
+    wide["submission_type_derived"] = wide.apply(_classify_submission_type, axis=1)
     return wide
 
 # ──────────────────────────────────────────────────────────
@@ -453,7 +496,139 @@ def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
     return src.reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────
-# SNAPSHOT COMPONENT SCORES
+# DAILY AGGREGATE MODEL
+# Replaces the old "first submission of day" approach.
+# Groups all submissions by date and produces one row per day by:
+#   - Averaging numeric/scale scores, weighting snapshots at 1.0 and reviews at 0.5
+#   - Boolean flags: any-true across all submissions that day
+#   - Text fields: taken from the review submission if present, else latest snapshot
+#   - Sleep: taken from review submissions only (that's where it's meaningful)
+# ──────────────────────────────────────────────────────────
+def build_daily_aggregate(wide: pd.DataFrame, weights: dict[str, float]) -> pd.DataFrame:
+    """
+    Produce one scored row per calendar day by aggregating all submissions.
+    Snapshot submissions are weighted at SNAPSHOT_WEIGHT (1.0).
+    Review submissions are weighted at REVIEW_WEIGHT (0.5).
+    """
+    if wide.empty:
+        return pd.DataFrame()
+
+    by_code = _catalog_by_code()
+
+    # Score every individual submission first (snapshot mode — no daily_only filter)
+    scored_all = build_scored_table(wide, weights, daily_only=False)
+
+    # Carry submission_type_derived into scored_all
+    scored_all = scored_all.merge(
+        wide[["submission_id", "submission_type_derived"]],
+        on="submission_id", how="left"
+    )
+
+    # Per-submission weight scalar
+    scored_all["_sw"] = scored_all["submission_type_derived"].map({
+        SUBMISSION_TYPE_SNAPSHOT: SNAPSHOT_WEIGHT,
+        SUBMISSION_TYPE_REVIEW:   REVIEW_WEIGHT,
+    }).fillna(SNAPSHOT_WEIGHT)
+
+    # ── Aggregate by date ────────────────────────────────────
+    agg_rows: list[dict] = []
+
+    for date, group in scored_all.groupby("submitted_date"):
+        row: dict = {"date": date}
+
+        # Submission counts
+        row["n_snapshots"] = int((group["submission_type_derived"] == SUBMISSION_TYPE_SNAPSHOT).sum())
+        row["n_reviews"]   = int((group["submission_type_derived"] == SUBMISSION_TYPE_REVIEW).sum())
+        row["n_total"]     = len(group)
+
+        weights_arr = group["_sw"].values.astype(float)
+        total_w     = weights_arr.sum()
+
+        # Domain scores — weighted mean across all submissions
+        for domain in DOMAINS:
+            col = f"{domain} Score %"
+            col_raw = f"{domain} Score % (raw)"
+            if col in group.columns:
+                row[col]     = float(np.average(group[col].fillna(0), weights=weights_arr))
+            if col_raw in group.columns:
+                row[col_raw] = float(np.average(group[col_raw].fillna(0), weights=weights_arr))
+
+        row["Overall Score %"] = float(np.mean([row.get(f"{d} Score %", 0) for d in DOMAINS]))
+
+        # Meta multiplier — weighted mean
+        if "meta_multiplier" in group.columns:
+            row["meta_multiplier"] = float(np.average(
+                group["meta_multiplier"].fillna(1.0), weights=weights_arr
+            ))
+
+        # Raw question scores
+        for code, meta in by_code.items():
+            if code not in wide.columns:
+                continue
+            # Merge raw values from wide into group via submission_id
+            raw_vals = wide[wide["submitted_date"] == date][[code, "submission_type_derived"]].copy()
+            if raw_vals.empty:
+                continue
+
+            if meta["rtype"] == "boolean_yes_no":
+                # Any-true across all submissions that day
+                row[code] = bool(raw_vals[code].any())
+
+            elif code in ("func_sleep_hours", "func_sleep_quality"):
+                # Sleep only from review submissions; fall back to any if no review
+                review_vals = raw_vals[raw_vals["submission_type_derived"] == SUBMISSION_TYPE_REVIEW][code].dropna()
+                if not review_vals.empty:
+                    row[code] = float(review_vals.mean())
+                else:
+                    all_vals = raw_vals[code].dropna()
+                    row[code] = float(all_vals.mean()) if not all_vals.empty else np.nan
+
+            elif meta["rtype"] in ("scale_1_5", "numeric"):
+                # Weighted mean (snapshot 1.0, review 0.5)
+                rv = raw_vals[[code, "submission_type_derived"]].copy()
+                rv["_w"] = rv["submission_type_derived"].map({
+                    SUBMISSION_TYPE_SNAPSHOT: SNAPSHOT_WEIGHT,
+                    SUBMISSION_TYPE_REVIEW:   REVIEW_WEIGHT,
+                }).fillna(SNAPSHOT_WEIGHT)
+                rv = rv.dropna(subset=[code])
+                if not rv.empty:
+                    row[code] = float(np.average(
+                        pd.to_numeric(rv[code], errors="coerce").fillna(0),
+                        weights=rv["_w"]
+                    ))
+
+            elif meta["rtype"] == "text":
+                # Text: prefer review, fall back to latest snapshot
+                review_text = raw_vals[raw_vals["submission_type_derived"] == SUBMISSION_TYPE_REVIEW][code]
+                review_text = review_text[review_text.notna() & (review_text.astype(str).str.strip() != "")]
+                if not review_text.empty:
+                    row[code] = str(review_text.iloc[-1])
+                else:
+                    snap_text = raw_vals[raw_vals["submission_type_derived"] == SUBMISSION_TYPE_SNAPSHOT][code]
+                    snap_text = snap_text[snap_text.notna() & (snap_text.astype(str).str.strip() != "")]
+                    row[code] = str(snap_text.iloc[-1]) if not snap_text.empty else ""
+
+        # Track the latest submitted_at for this day
+        row["submitted_at"] = group["submitted_at"].max()
+
+        # Has a review?
+        row["has_review"]   = row["n_reviews"] > 0
+        row["has_snapshot"] = row["n_snapshots"] > 0
+
+        agg_rows.append(row)
+
+    if not agg_rows:
+        return pd.DataFrame()
+
+    daily = pd.DataFrame(agg_rows).sort_values("date").reset_index(drop=True)
+
+    # Delta and rolling average on final scores
+    for col in [f"{d} Score %" for d in DOMAINS] + ["Overall Score %"]:
+        if col in daily.columns:
+            daily[f"{col} Delta"] = daily[col].diff()
+            daily[f"{col} 7d Avg"] = daily[col].rolling(7, min_periods=1).mean()
+
+    return daily
 # Returns normalised per-item contribution for a single snapshot row
 # ──────────────────────────────────────────────────────────
 def get_snapshot_components(row: pd.Series, domain: str, weights: dict[str, float]) -> pd.DataFrame:
@@ -570,29 +745,41 @@ def compute_personal_baseline(
     window_days: int = 90,
     episodes: pd.DataFrame | None = None,
 ) -> dict[str, dict]:
+    """
+    Personal baseline is computed from well days using snapshot-derived scores only.
+    Snapshot submissions are the most accurate point-in-time readings; reviews are
+    subject to recall bias and excluded from the baseline calculation.
+    Days with no snapshots (review-only days) are also excluded.
+    """
     empty = dict(mean=None, sd=None, n=0, lower=None, upper=None, reliable=False)
     if daily.empty:
         return {d: empty.copy() for d in DOMAINS}
-    mask = pd.Series(True, index=daily.index)
+
+    # Only use days that have at least one snapshot submission
+    working = daily.copy()
+    if "has_snapshot" in working.columns:
+        working = working[working["has_snapshot"] == True]
+
+    mask = pd.Series(True, index=working.index)
     for domain in DOMAINS:
         col = f"{domain} Score %"
-        if col in daily.columns:
+        if col in working.columns:
             ceiling = bands.get(domain, {}).get("well", 20.0)
-            mask &= daily[col].fillna(999) <= ceiling
+            mask &= working[col].fillna(999) <= ceiling
 
-    # Exclude days that fall within labelled episodes
+    # Exclude labelled episode periods
     if episodes is not None and not episodes.empty:
-        ep_mask = pd.Series(False, index=daily.index)
+        ep_mask = pd.Series(False, index=working.index)
         for _, ep in episodes.iterrows():
             try:
                 ep_start = pd.Timestamp(ep["start_date"]).date()
                 ep_end   = pd.Timestamp(ep["end_date"]).date()
-                ep_mask |= (daily["date"] >= ep_start) & (daily["date"] <= ep_end)
+                ep_mask |= (working["date"] >= ep_start) & (working["date"] <= ep_end)
             except Exception:
                 pass
         mask &= ~ep_mask
 
-    well_days = daily[mask].sort_values("date").tail(window_days)
+    well_days = working[mask].sort_values("date").tail(window_days)
     result: dict[str, dict] = {}
     for domain in DOMAINS:
         col = f"{domain} Score %"
@@ -1233,6 +1420,7 @@ def generate_clinician_report(
     notes: pd.DataFrame,
     med_notes: pd.DataFrame,
     weights: dict,
+    wide: pd.DataFrame,
     window_days: int = 30,
 ) -> str:
     """Generate a structured plain-text / markdown clinician summary."""
@@ -1241,7 +1429,7 @@ def generate_clinician_report(
     window_start = today - datetime.timedelta(days=window_days)
 
     lines: list[str] = []
-    lines.append(f"# Bipolar Dashboard — Clinician Summary")
+    lines.append("# Bipolar Dashboard — Clinician Summary")
     lines.append(f"**Generated:** {today.strftime('%d %B %Y')}  ")
     lines.append(f"**Period:** Last {window_days} days ({window_start.strftime('%d %b')} – {today.strftime('%d %b %Y')})")
     lines.append("")
@@ -1252,19 +1440,43 @@ def generate_clinician_report(
         latest = daily.sort_values("date").iloc[-1]
         mult   = float(latest.get("meta_multiplier", 1.0) or 1.0)
         lines.append(f"**Latest entry:** {latest['date']}  ")
+        lines.append(f"**Submissions that day:** {int(latest.get('n_total',1))} "
+                     f"({int(latest.get('n_snapshots',0))} snapshot, {int(latest.get('n_reviews',0))} review)")
         lines.append(f"**Meta force multiplier:** ×{mult:.2f}" +
                      (" ⚡ active" if mult > 1.05 else " (baseline)"))
         lines.append("")
-        lines.append("| Domain | Score | Raw | Band | vs Baseline |")
-        lines.append("|--------|-------|-----|------|-------------|")
+
+        # For the latest date, show snapshot aggregate vs review scores separately
+        latest_date = latest["date"]
+        day_wide = wide[wide["submitted_date"] == latest_date] if not wide.empty else pd.DataFrame()
+        snap_rows   = day_wide[day_wide["submission_type_derived"] == SUBMISSION_TYPE_SNAPSHOT] if not day_wide.empty else pd.DataFrame()
+        review_rows = day_wide[day_wide["submission_type_derived"] == SUBMISSION_TYPE_REVIEW]   if not day_wide.empty else pd.DataFrame()
+
+        lines.append("| Domain | Aggregate | Snapshot avg | Review avg | Band | vs Baseline |")
+        lines.append("|--------|-----------|-------------|------------|------|-------------|")
         for d in DOMAINS:
             score = float(latest.get(f"{d} Score %", 0) or 0)
-            raw   = float(latest.get(f"{d} Score % (raw)", score) or score)
             band  = classify_score(score, d, bands)
             pb    = personal_bl.get(d, {})
-            vs_bl = (f"{score - pb['mean']:+.1f}pp vs baseline"
+            vs_bl = (f"{score - pb['mean']:+.1f}pp"
                      if pb.get("reliable") and pb.get("mean") is not None else "—")
-            lines.append(f"| {d} | {score:.1f}% | {raw:.1f}% | {band.upper()} | {vs_bl} |")
+            # Snapshot average for this domain
+            snap_avg = "—"
+            rev_avg  = "—"
+            if not snap_rows.empty:
+                # Score each snapshot row and average
+                snap_scored = build_scored_table(snap_rows.assign(
+                    is_first_of_day=True, submission_order_in_day=1
+                ), weights, daily_only=False)
+                if not snap_scored.empty and f"{d} Score %" in snap_scored.columns:
+                    snap_avg = f"{snap_scored[f'{d} Score %'].mean():.1f}%"
+            if not review_rows.empty:
+                rev_scored = build_scored_table(review_rows.assign(
+                    is_first_of_day=True, submission_order_in_day=1
+                ), weights, daily_only=False)
+                if not rev_scored.empty and f"{d} Score %" in rev_scored.columns:
+                    rev_avg = f"{rev_scored[f'{d} Score %'].mean():.1f}%"
+            lines.append(f"| {d} | {score:.1f}% | {snap_avg} | {rev_avg} | {band.upper()} | {vs_bl} |")
     else:
         lines.append("*No daily data available.*")
     lines.append("")
@@ -1528,8 +1740,8 @@ pb_window    = bl_config["personal_baseline_window"]
 raw_df       = load_sheet(NEW_FORM_TAB)
 indexed_df   = add_submission_indexing(raw_df)
 wide_df      = clean_and_widen(indexed_df)
-daily_df     = build_scored_table(wide_df, weights, daily_only=True)
 snapshots_df = build_scored_table(wide_df, weights, daily_only=False)
+daily_df     = build_daily_aggregate(wide_df, weights)
 warnings_df  = build_warnings(daily_df, snapshots_df, bands, mv_threshold)
 episodes_df  = load_episodes()
 personal_bl  = compute_personal_baseline(daily_df, bands, pb_window, episodes=episodes_df)
@@ -1602,7 +1814,7 @@ notes_filtered     = _apply_date_filter(notes_df, "date") if not notes_df.empty 
 m1, m2, m3, m4, m5 = st.columns(5)
 m1.metric("Total entries",   len(raw_df))
 m2.metric("Days tracked",    len(daily_df))
-m3.metric("Snapshot rows",   len(snapshots_df))
+m3.metric("Snapshots",       int(wide_df["submission_type_derived"].eq(SUBMISSION_TYPE_SNAPSHOT).sum()) if "submission_type_derived" in wide_df.columns else len(snapshots_df))
 m4.metric("Active warnings", int(len(warnings_df[warnings_df["severity"] == "High"])) if not warnings_df.empty else 0)
 if not daily_df.empty:
     lo = float(daily_df["Overall Score %"].iloc[-1])
@@ -1907,6 +2119,32 @@ with tab_analysis:
                          use_container_width=True, hide_index=True)
 
         st.divider()
+        st.markdown("### Submission type summary")
+        if "submission_type_derived" in wide_df.columns:
+            type_summary = wide_df.copy()
+            if filter_start:
+                type_summary = type_summary[
+                    (type_summary["submitted_date"] >= filter_start) &
+                    (type_summary["submitted_date"] <= filter_end)
+                ]
+            n_snap = int((type_summary["submission_type_derived"] == SUBMISSION_TYPE_SNAPSHOT).sum())
+            n_rev  = int((type_summary["submission_type_derived"] == SUBMISSION_TYPE_REVIEW).sum())
+            ts1, ts2, ts3, ts4 = st.columns(4)
+            ts1.metric("Snapshots", n_snap)
+            ts2.metric("Reviews", n_rev)
+            if not daily_filtered.empty:
+                days_no_review = int((daily_filtered.get("n_reviews", pd.Series([0]*len(daily_filtered))) == 0).sum()) if "n_reviews" in daily_filtered.columns else 0
+                days_no_snap   = int((daily_filtered.get("n_snapshots", pd.Series([0]*len(daily_filtered))) == 0).sum()) if "n_snapshots" in daily_filtered.columns else 0
+                ts3.metric("Days with no review", days_no_review)
+                ts4.metric("Days with no snapshot", days_no_snap)
+                if days_no_review > 0:
+                    st.caption(
+                        f"⚠ {days_no_review} day(s) in this period have no day review. "
+                        f"The daily aggregate for those days is based on snapshots only, "
+                        f"which is actually preferable for accuracy."
+                    )
+
+        st.divider()
         if "func_sleep_hours" in daily_filtered.columns:
             st.markdown("### Sleep analysis")
             sleep = daily_filtered[["date","func_sleep_hours","func_sleep_quality"]].dropna(subset=["func_sleep_hours"])
@@ -1966,6 +2204,18 @@ with tab_journal:
             text       = str(entry.get("experience_description", ""))
             keywords   = entry.get("keywords", [])
 
+            # Submission type badge — look up from wide_df for this date
+            day_subs = wide_df[wide_df["submitted_date"] == entry.get("date")] if not wide_df.empty else pd.DataFrame()
+            has_review   = not day_subs.empty and (day_subs["submission_type_derived"] == SUBMISSION_TYPE_REVIEW).any()
+            has_snapshot = not day_subs.empty and (day_subs["submission_type_derived"] == SUBMISSION_TYPE_SNAPSHOT).any()
+            type_badge = ""
+            if has_review and has_snapshot:
+                type_badge = "📋 Review + 📸 Snapshot"
+            elif has_review:
+                type_badge = "📋 Day review"
+            elif has_snapshot:
+                type_badge = "📸 Snapshot"
+
             # Domain context line
             domain_context = []
             for d in DOMAINS:
@@ -1998,6 +2248,7 @@ with tab_journal:
                 ">
                 <strong>{emoji} {date_str}</strong>
                 &nbsp;&nbsp;<span style="color:#666;font-size:0.85em">{context_str}</span>
+                &nbsp;&nbsp;<span style="font-size:0.8em;color:#999">{type_badge}</span>
                 </div>""",
                 unsafe_allow_html=True,
             )
@@ -2152,6 +2403,7 @@ with tab_export:
         notes=notes_df,
         med_notes=med_notes_df,
         weights=weights,
+        wide=wide_df,
         window_days=export_window,
     )
 
@@ -2181,7 +2433,8 @@ with tab_baseline:
         )
         ep_exclusion_note = f" Episode periods are excluded ({n_ep_days} labelled episode days removed)."
     st.caption(
-        f"Derived from days where **all** domains were in the Well band. "
+        f"Derived from days where **all** domains were in the Well band **and at least one snapshot was submitted**. "
+        f"Snapshots are used because they reflect point-in-time state more accurately than retrospective reviews. "
         f"Uses the most recent **{pb_window}** such days. "
         f"Requires **{PERSONAL_BASELINE_MIN_DAYS}+** days to be reliable.{ep_exclusion_note}"
     )
