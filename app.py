@@ -2616,7 +2616,7 @@ with tab_journal:
         st.divider()
 
         # Entry cards
-        for _, entry in filtered_notes.iterrows():
+        for row_idx, (_, entry) in enumerate(filtered_notes.iterrows()):
             band       = entry.get("worst_band", "unknown")
             hex_colour = BAND_COLOUR_HEX.get(band, "#8E8E93")
             emoji      = BAND_EMOJI.get(band, "⚪")
@@ -2700,15 +2700,15 @@ with tab_journal:
                         unsafe_allow_html=True,
                     )
 
-            # Add comment input — use a unique key per submission
-            comment_key = f"comment_input_{submission_id}"
+            # Add comment input — key includes row index to guarantee uniqueness
+            comment_key = f"comment_input_{submission_id}_{row_idx}"
             new_comment = st.text_input(
                 "Add a note to this entry",
                 placeholder="Type a note and press Enter…",
                 key=comment_key,
                 label_visibility="collapsed",
             )
-            save_key = f"comment_save_{submission_id}"
+            save_key = f"comment_save_{submission_id}_{row_idx}"
             if st.button("Save note", key=save_key, type="secondary"):
                 if new_comment.strip():
                     ok, msg = save_comment(submission_id, new_comment.strip())
