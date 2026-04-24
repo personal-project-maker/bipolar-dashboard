@@ -127,10 +127,16 @@ def save_comment(submission_id: str, comment_text: str) -> tuple[bool, str]:
 
 def get_comments_for_submission(submission_id: str, comments_df: pd.DataFrame) -> list[dict]:
     """Return all comments for a given submission_id, oldest first."""
+    if not submission_id or submission_id.strip() == "":
+        return []
     if comments_df.empty or "submission_id" not in comments_df.columns:
         return []
-    rows = comments_df[comments_df["submission_id"] == submission_id]
-    return rows.to_dict("records")
+    # Ensure we only match non-empty IDs exactly
+    rows = comments_df[
+        (comments_df["submission_id"].astype(str).str.strip() == submission_id.strip()) &
+        (comments_df["submission_id"].astype(str).str.strip() != "")
+    ]
+    return rows.sort_values("commented_at").to_dict("records") if not rows.empty else []
 
 # ──────────────────────────────────────────────────────────
 # BASELINE BAND DEFINITIONS
@@ -900,7 +906,7 @@ def build_notes_df(wide: pd.DataFrame, daily_scored: pd.DataFrame, bands: dict) 
 
     notes = wide[wide["experience_description"].notna() &
                  (wide["experience_description"].astype(str).str.strip() != "")].copy()
-    notes = notes[["submitted_at", "submitted_date", "experience_description"]].copy()
+    notes = notes[["submission_id", "submitted_at", "submitted_date", "experience_description"]].copy()
     notes["date"] = notes["submitted_date"]
 
     # Join domain scores from daily (first-of-day)
