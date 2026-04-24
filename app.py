@@ -1605,7 +1605,8 @@ def add_med_log_overlays(fig: go.Figure, med_log: pd.DataFrame) -> go.Figure:
         dose_str = f"{row['dose']}{row['dose_unit']}" if pd.notna(row.get("dose")) else ""
         label = f"💊 {row['medication']} {dose_str} ({row['change_type']})"
         fig = _add_vline_date(fig, x=str(row["date"]), label=label,
-                              color="rgba(100,100,200,0.6)")
+                              line_color="rgba(100,100,200,0.6)",
+                              font_color="rgba(100,100,200,1)")
     return fig
 
 # ──────────────────────────────────────────────────────────
