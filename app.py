@@ -1,6 +1,4 @@
-from pathlib import Path
-
-script = r'''"""
+"""
 Bipolar Dashboard — revised full script.
 
 Major changes in this version:
@@ -2165,8 +2163,3 @@ with tab_settings:
     display_cols = ["code", "text", "group", "meta_role", "rtype", "polarity", "domains", "order"]
     cat_display = catalog_df()
     st.dataframe(cat_display[[c for c in display_cols if c in cat_display.columns]], use_container_width=True)
-'''
-
-path = Path("/mnt/data/bipolar_dashboard_revised.py")
-path.write_text(script, encoding="utf-8")
-path
