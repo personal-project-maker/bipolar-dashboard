@@ -58,6 +58,7 @@ SETTINGS_TAB = "Scoring Settings"
 BASELINE_TAB = "Baseline Settings"
 EPISODE_TAB  = "Episode Log"
 COMMENTS_TAB = "Journal Comments"
+MED_LOG_TAB  = "Medication Log"
 
 @st.cache_resource
 def _gspread_client() -> gspread.Client:
@@ -1492,10 +1493,10 @@ def add_episode_overlays(fig: go.Figure, episodes: pd.DataFrame,
     return fig
 
 # ──────────────────────────────────────────────────────────
-# MEDICATION NOTES
+# MEDICATION NOTES (from form field)
 # ──────────────────────────────────────────────────────────
 def build_med_notes_df(wide: pd.DataFrame, daily_scored: pd.DataFrame) -> pd.DataFrame:
-    """Extract non-empty medication change notes, joined with daily scores."""
+    """Extract non-empty medication change notes from form, joined with daily scores."""
     if wide.empty or "medication_notes" not in wide.columns:
         return pd.DataFrame()
     med = wide[
@@ -1513,6 +1514,101 @@ def build_med_notes_df(wide: pd.DataFrame, daily_scored: pd.DataFrame) -> pd.Dat
     return med.sort_values("submitted_at", ascending=False).reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────
+# MEDICATION LOG (dedicated tab — log change events directly)
+# Stored in Google Sheet tab "Medication Log" with columns:
+#   med_id | date | medication | dose | dose_unit | frequency | change_type | notes
+# ──────────────────────────────────────────────────────────
+MED_CHANGE_TYPES = ["Started", "Increased", "Decreased", "Stopped", "Dose adjusted", "Added PRN", "Other"]
+MED_DOSE_UNITS   = ["mg", "mcg", "g", "ml", "units", "tablets"]
+MED_FREQUENCIES  = ["Once daily", "Twice daily", "Three times daily", "Four times daily",
+                    "As needed (PRN)", "Every other day", "Weekly", "Other"]
+
+@st.cache_data(ttl=30)
+def load_med_log() -> pd.DataFrame:
+    """Load the medication change log from the Medication Log sheet tab."""
+    ws = safe_worksheet(MED_LOG_TAB)
+    if ws is None:
+        return pd.DataFrame(columns=["med_id","date","medication","dose","dose_unit",
+                                      "frequency","change_type","notes"])
+    try:
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return pd.DataFrame(columns=["med_id","date","medication","dose","dose_unit",
+                                          "frequency","change_type","notes"])
+        df = pd.DataFrame(values[1:], columns=values[0])
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+        df["dose"] = pd.to_numeric(df["dose"], errors="coerce")
+        return df.dropna(subset=["date"]).sort_values("date", ascending=False).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=["med_id","date","medication","dose","dose_unit",
+                                      "frequency","change_type","notes"])
+
+def _save_med_log(df: pd.DataFrame) -> tuple[bool, str]:
+    ws = safe_worksheet(MED_LOG_TAB)
+    if ws is None:
+        return False, (
+            f"Worksheet '{MED_LOG_TAB}' not found. Create a tab with that exact name "
+            "in your Google Sheet, then medication events will save correctly."
+        )
+    cols = ["med_id","date","medication","dose","dose_unit","frequency","change_type","notes"]
+    rows = [cols]
+    for _, row in df.iterrows():
+        rows.append([str(row.get(c, "")) for c in cols])
+    ws.clear()
+    ws.update("A1", rows)
+    load_med_log.clear()
+    return True, "Medication log saved."
+
+def add_med_event(date, medication: str, dose: float, dose_unit: str,
+                  frequency: str, change_type: str, notes: str) -> tuple[bool, str]:
+    import hashlib, datetime as _dt
+    existing = load_med_log()
+    med_id = hashlib.md5(
+        f"{date}{medication}{dose}{change_type}".encode()
+    ).hexdigest()[:8]
+    new_row = pd.DataFrame([{
+        "med_id": med_id, "date": date, "medication": medication.strip(),
+        "dose": dose, "dose_unit": dose_unit, "frequency": frequency,
+        "change_type": change_type, "notes": notes.strip(),
+    }])
+    updated = pd.concat([existing, new_row], ignore_index=True)
+    ok, msg = _save_med_log(updated)
+    if ok:
+        load_med_log.clear()
+    return ok, msg
+
+def delete_med_event(med_id: str) -> tuple[bool, str]:
+    existing = load_med_log()
+    updated = existing[existing["med_id"] != med_id].reset_index(drop=True)
+    return _save_med_log(updated)
+
+def get_current_medications(med_log: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return the most recent event per medication name.
+    Excludes medications where the most recent event is 'Stopped'.
+    """
+    if med_log.empty:
+        return pd.DataFrame()
+    latest = (
+        med_log.sort_values("date", ascending=False)
+        .groupby("medication", as_index=False)
+        .first()
+    )
+    active = latest[latest["change_type"] != "Stopped"].copy()
+    return active.sort_values("medication")
+
+def add_med_log_overlays(fig: go.Figure, med_log: pd.DataFrame) -> go.Figure:
+    """Add vertical dashed markers to a Plotly figure for each medication change event."""
+    if med_log.empty:
+        return fig
+    for _, row in med_log.iterrows():
+        dose_str = f"{row['dose']}{row['dose_unit']}" if pd.notna(row.get("dose")) else ""
+        label = f"💊 {row['medication']} {dose_str} ({row['change_type']})"
+        fig = _add_vline_date(fig, x=str(row["date"]), label=label,
+                              color="rgba(100,100,200,0.6)")
+    return fig
+
+# ──────────────────────────────────────────────────────────
 # CLINICIAN EXPORT
 # ──────────────────────────────────────────────────────────
 def generate_clinician_report(
@@ -1525,6 +1621,7 @@ def generate_clinician_report(
     weights: dict,
     wide: pd.DataFrame,
     comments: pd.DataFrame = None,
+    med_log: pd.DataFrame = None,
     window_days: int = 30,
 ) -> str:
     """Generate a structured plain-text / markdown clinician summary."""
@@ -1639,16 +1736,45 @@ def generate_clinician_report(
     lines.append("")
 
     # ── Medication notes ────────────────────────────────────
-    lines.append("## Medication Notes")
+    lines.append("## Medications")
+
+    # Current medications from the dedicated log
+    current_meds = get_current_medications(med_log if med_log is not None and not med_log.empty
+                                           else pd.DataFrame())
+    if not current_meds.empty:
+        lines.append("### Currently active")
+        for _, m in current_meds.iterrows():
+            dose_str = f"{m['dose']:.0f}{m['dose_unit']}" if pd.notna(m.get("dose")) else ""
+            freq_str = f", {m['frequency']}" if m.get("frequency") else ""
+            lines.append(f"- **{m['medication']}** {dose_str}{freq_str} "
+                         f"(last change: {m['change_type']} on {m['date']})")
+        lines.append("")
+
+    # Changes in the report window
+    if med_log is not None and not med_log.empty:
+        recent_log = med_log[med_log["date"] >= window_start]
+        if not recent_log.empty:
+            lines.append("### Changes in this period")
+            for _, m in recent_log.sort_values("date", ascending=False).iterrows():
+                dose_str = f"{m['dose']:.0f}{m['dose_unit']}" if pd.notna(m.get("dose")) else ""
+                note_str = f" — {m['notes']}" if m.get("notes") else ""
+                lines.append(f"- **{m['date']}** {m['change_type']}: "
+                             f"{m['medication']} {dose_str}{note_str}")
+            lines.append("")
+
+    # Form-field medication notes as supplementary
     if not med_notes.empty:
-        recent_med = med_notes[med_notes["date"] >= window_start] if not med_notes.empty else med_notes
+        recent_med = med_notes[med_notes["date"] >= window_start]
         if not recent_med.empty:
+            lines.append("### Form notes (supplementary)")
             for _, m in recent_med.sort_values("submitted_at", ascending=False).iterrows():
                 lines.append(f"- **{m['date']}:** {m['medication_notes']}")
-        else:
-            lines.append("*No medication notes in this period.*")
-    else:
-        lines.append("*No medication notes recorded.*")
+            lines.append("")
+
+    if (current_meds.empty and
+            (med_log is None or med_log.empty) and
+            med_notes.empty):
+        lines.append("*No medication information recorded.*")
     lines.append("")
 
     # ── Journal highlights ──────────────────────────────────
@@ -1699,12 +1825,11 @@ PSY_PRIMARY_CODES = [
 # In our model these are inverted in the Psychosis domain, but here we
 # read them at face value: high = good insight, low = poor insight
 PSY_INSIGHT_CODES = [
-    "meta_something_wrong",  # "do I think something may be wrong?"
-    "meta_concerned",        # "am I concerned about my current state?"
-    "psy_confidence_reality",# "how confident have I been in the reality of these experiences?"
-    # Note: psy_confidence_reality is already in the psychosis domain at face value
-    # (higher confidence in abnormal experiences = worse), so we re-read it inverted
-    # here as an insight proxy: lower confidence in those experiences = better insight
+    "meta_something_wrong",   # "do I think something may be wrong?" — high = good insight
+    "meta_concerned",         # "am I concerned about my current state?" — high = good insight
+    "psy_confidence_reality", # inverted: high confidence in abnormal experiences = poor insight
+    "psy_trust_perceptions",  # inverted: high trust in own perceptions = retained metacognitive doubt
+                              # someone who still distrusts their perceptions hasn't fully lost insight
 ]
 
 def _mean_normalised(row: pd.Series, codes: list[str], invert: bool = False) -> float | None:
@@ -1737,10 +1862,17 @@ def detect_psychosis_insight_divergence(
     Analyse the last `window` days of daily data to detect whether a fall
     in psychosis scores reflects genuine improvement or possible loss of insight.
 
+    Insight composite uses four items:
+      - meta_something_wrong:   high = good insight (notices something wrong)
+      - meta_concerned:         high = good insight (concerned about state)
+      - psy_confidence_reality: INVERTED — high confidence in abnormal experiences = poor insight
+      - psy_trust_perceptions:  INVERTED — high trust in perceptions = less metacognitive doubt
+                                Someone who still distrusts their perceptions retains insight.
+
     Returns a dict with:
-      status:       "improvement" | "ambiguous" | "loss_of_insight" | "stable" | "insufficient_data"
+      status:         "improvement" | "ambiguous" | "loss_of_insight" | "stable" | "insufficient_data"
       primary_delta:  change in mean primary symptom score over window (negative = falling)
-      insight_delta:  change in mean insight score over window (negative = falling = worse insight)
+      insight_delta:  change in composite insight score over window (negative = insight worsening)
       finding:        plain-English description
       severity:       "ok" | "caution" | "warning"
       days_analysed:  int
@@ -1761,92 +1893,96 @@ def detect_psychosis_insight_divergence(
     n = len(recent)
     result["days_analysed"] = n
 
-    # Compute per-row scores for primary symptoms and insight
-    # psy_confidence_reality: high score (confident in abnormal experiences) = bad,
-    # so we invert it to use as an insight proxy (low confidence = good insight = high score here)
+    # Primary symptom scores — read at face value (higher = more symptomatic)
     primary_scores = recent.apply(
         lambda r: _mean_normalised(r, PSY_PRIMARY_CODES, invert=False), axis=1
     ).dropna()
 
-    insight_scores = recent.apply(
-        lambda r: _mean_normalised(
-            r,
-            # meta_something_wrong and meta_concerned: high = good insight (higher_worse scale,
-            # so high score means they think something IS wrong — that's good insight)
-            # psy_confidence_reality: high = bad insight, so invert it
-            ["meta_something_wrong", "meta_concerned"],
-            invert=False,
-        ),
-        axis=1,
-    ).dropna()
+    # Composite insight score — combines all four insight items.
+    # meta_something_wrong and meta_concerned: high score = good insight, read at face value.
+    # psy_confidence_reality and psy_trust_perceptions: high score = poor insight, so inverted.
+    # We compute a weighted mean: 0.5 for the meta items together, 0.5 for the psy items together.
+    def _composite_insight(row: pd.Series) -> float | None:
+        meta_score = _mean_normalised(
+            row, ["meta_something_wrong", "meta_concerned"], invert=False
+        )
+        psy_score = _mean_normalised(
+            row, ["psy_confidence_reality", "psy_trust_perceptions"], invert=True
+        )
+        if meta_score is None and psy_score is None:
+            return None
+        if meta_score is None:
+            return psy_score
+        if psy_score is None:
+            return meta_score
+        return (meta_score + psy_score) / 2.0
 
+    insight_scores = recent.apply(_composite_insight, axis=1).dropna()
+
+    # Also track confidence and trust items separately for the loss-of-insight classifier
     confidence_scores = recent.apply(
-        lambda r: _mean_normalised(r, ["psy_confidence_reality"], invert=True),
-        # inverted: high confidence in abnormal experiences → low insight score
+        lambda r: _mean_normalised(r, ["psy_confidence_reality", "psy_trust_perceptions"], invert=True),
         axis=1,
     ).dropna()
 
     if len(primary_scores) < 2 or len(insight_scores) < 2:
         return result
 
-    # Compute trend as (last third mean) - (first third mean)
     def _trend(s: pd.Series) -> float:
+        """Change = last-third mean minus first-third mean."""
         third = max(1, len(s) // 3)
         return float(s.tail(third).mean() - s.head(third).mean())
 
-    primary_delta = _trend(primary_scores)
-    insight_delta = _trend(insight_scores)   # negative = insight worsening
+    primary_delta    = _trend(primary_scores)
+    insight_delta    = _trend(insight_scores)
     confidence_delta = _trend(confidence_scores) if len(confidence_scores) >= 2 else 0.0
 
     result["primary_delta"] = round(primary_delta, 1)
     result["insight_delta"] = round(insight_delta, 1)
 
-    primary_falling  = primary_delta  < -drop_threshold
-    insight_falling  = insight_delta  < -divergence_threshold
-    insight_stable   = abs(insight_delta) < divergence_threshold
-    insight_rising   = insight_delta  >  divergence_threshold
-    confidence_poor  = confidence_delta < -divergence_threshold  # less critical insight
+    primary_falling = primary_delta  < -drop_threshold
+    insight_falling = insight_delta  < -divergence_threshold
+    insight_stable  = abs(insight_delta) < divergence_threshold
+    insight_rising  = insight_delta  >  divergence_threshold
+    # confidence_poor: psy_confidence and psy_trust both moving in bad direction
+    confidence_poor = confidence_delta < -divergence_threshold
 
     if not primary_falling:
-        # Psychosis not falling — standard monitoring
         result["status"]   = "stable"
         result["finding"]  = "Psychosis scores are not falling. No divergence to assess."
         result["severity"] = "ok"
         return result
 
-    # Primary symptoms ARE falling — now assess what insight is doing
-    if primary_falling and (insight_stable or insight_rising):
-        # Good sign: symptoms falling, insight holding or improving
+    if insight_stable or insight_rising:
         result["status"]  = "improvement"
         result["finding"] = (
             f"Psychosis scores have fallen (~{abs(primary_delta):.0f}pp over {n} days) "
-            f"and insight indicators are {'holding steady' if insight_stable else 'improving'}. "
+            f"and the insight composite (including concern, confidence in experiences, "
+            f"and trust in perceptions) is "
+            f"{'holding steady' if insight_stable else 'improving'}. "
             f"This pattern is consistent with genuine improvement."
         )
         result["severity"] = "ok"
 
-    elif primary_falling and insight_falling and not confidence_poor:
-        # Ambiguous: symptoms and insight both falling, but confidence not dramatically shifted
+    elif insight_falling and not confidence_poor:
         result["status"]  = "ambiguous"
         result["finding"] = (
             f"Psychosis scores have fallen (~{abs(primary_delta):.0f}pp over {n} days), "
-            f"but insight indicators have also declined (~{abs(insight_delta):.0f}pp). "
+            f"but the insight composite has also declined (~{abs(insight_delta):.0f}pp). "
             f"It is unclear whether this reflects genuine improvement or reduced awareness "
             f"of ongoing experiences. Worth discussing with your clinician."
         )
         result["severity"] = "caution"
 
-    elif primary_falling and insight_falling and confidence_poor:
-        # Most concerning: symptoms falling, insight falling, and confidence in
-        # the reality of experiences increasing — classic loss-of-insight picture
+    elif insight_falling and confidence_poor:
         result["status"]  = "loss_of_insight"
         result["finding"] = (
             f"Psychosis scores have fallen (~{abs(primary_delta):.0f}pp over {n} days), "
-            f"but insight indicators have also declined significantly (~{abs(insight_delta):.0f}pp) "
-            f"and confidence in the reality of experiences appears to be increasing. "
-            f"This pattern may reflect loss of insight rather than genuine improvement — "
-            f"experiences may feel more real and less alarming, not because they are resolving. "
-            f"This warrants prompt clinical review."
+            f"but insight indicators have declined significantly (~{abs(insight_delta):.0f}pp) "
+            f"and confidence in the reality of experiences / trust in perceptions appears "
+            f"to be increasing. This pattern may reflect loss of insight rather than "
+            f"genuine improvement — experiences may feel more real and less alarming, "
+            f"not because they are resolving. This warrants prompt clinical review."
         )
         result["severity"] = "warning"
 
@@ -2052,6 +2188,7 @@ episodes_df  = load_episodes()
 personal_bl  = compute_personal_baseline(daily_df, bands, pb_window, episodes=episodes_df)
 notes_df     = build_notes_df(wide_df, daily_df, bands)
 med_notes_df = build_med_notes_df(wide_df, daily_df)
+med_log_df   = load_med_log()
 comments_df  = load_comments()
 
 # ──────────────────────────────────────────────────────────
@@ -2073,6 +2210,7 @@ with st.sidebar:
         load_weights.clear()
         load_baseline_config.clear()
         load_comments.clear()
+        load_med_log.clear()
         st.session_state["last_refreshed"] = _dt.datetime.now()
         st.rerun()
     st.divider()
@@ -2174,10 +2312,10 @@ st.divider()
 # TABS
 # ──────────────────────────────────────────────────────────
 (tab_overview, tab_snapshots_tab, tab_analysis,
- tab_baseline, tab_journal, tab_episodes, tab_export,
+ tab_baseline, tab_journal, tab_episodes, tab_medications, tab_export,
  tab_questions, tab_daily, tab_data, tab_settings) = st.tabs([
     "Overview", "Snapshots", "Analysis", "Baselines",
-    "Journal", "Episodes", "Clinician Export",
+    "Journal", "Episodes", "Medications", "Clinician Export",
     "Questions", "Daily Model", "Data Layer", "Settings"
 ])
 
@@ -2254,7 +2392,7 @@ with tab_overview:
         # Episode overlays on the all-domains chart
         fig_all = add_episode_overlays(fig_all, episodes_df)
 
-        # Medication markers on the all-domains chart
+        # Medication markers — from form notes and from the dedicated log
         if not med_notes_df.empty:
             med_in_range = med_notes_df[
                 (med_notes_df["date"] >= filter_start) &
@@ -2263,6 +2401,13 @@ with tab_overview:
             for _, m in med_in_range.iterrows():
                 note_text = str(m.get("medication_notes",""))[:35]
                 fig_all = _add_vline_date(fig_all, x=str(m["date"]), label=f"💊 {note_text}")
+
+        if not med_log_df.empty:
+            log_in_range = med_log_df[
+                (med_log_df["date"] >= filter_start) &
+                (med_log_df["date"] <= filter_end)
+            ] if filter_start else med_log_df
+            fig_all = add_med_log_overlays(fig_all, log_in_range)
 
         fig_all.update_layout(
             height=chart_height, margin=dict(l=10, r=10, t=10, b=10),
@@ -2852,6 +2997,132 @@ with tab_episodes:
                 fig_ep = add_episode_overlays(fig_ep, single_ep)
                 st.plotly_chart(fig_ep, use_container_width=True)
 
+# ── MEDICATIONS ───────────────────────────────────────────
+with tab_medications:
+    st.markdown("## Medication Log")
+    st.caption(
+        "Log medication change events here — started, increased, decreased, stopped. "
+        "You only need to log **changes**, not daily doses. "
+        "Changes appear as markers on the domain score charts."
+    )
+
+    if not safe_worksheet(MED_LOG_TAB):
+        st.warning(
+            f"Worksheet '{MED_LOG_TAB}' not found in your Google Sheet. "
+            "Create a tab with that exact name and entries will save correctly."
+        )
+
+    # ── Current medications ────────────────────────────────
+    st.markdown("### Currently active medications")
+    current_meds = get_current_medications(med_log_df)
+    if current_meds.empty:
+        st.info("No medications logged yet.")
+    else:
+        for _, m in current_meds.iterrows():
+            dose_str = f"{m['dose']:.0f}{m['dose_unit']}" if pd.notna(m.get("dose")) else ""
+            freq_str = f" — {m['frequency']}" if m.get("frequency") else ""
+            note_str = f"  \n*{m['notes']}*" if m.get("notes") else ""
+            st.markdown(
+                f"**{m['medication']}** {dose_str}{freq_str}  \n"
+                f"*Last change: {m['change_type']} on {m['date']}*{note_str}"
+            )
+
+    st.divider()
+
+    # ── Add new event ──────────────────────────────────────
+    st.markdown("### Log a medication change")
+    with st.form("med_log_form", clear_on_submit=True):
+        import datetime as _med_dt
+        f1, f2, f3 = st.columns(3)
+        med_date     = f1.date_input("Date", value=_med_dt.date.today(), key="mf_date")
+        med_name     = f2.text_input("Medication name", placeholder="e.g. Quetiapine", key="mf_name")
+        change_type  = f3.selectbox("Change type", MED_CHANGE_TYPES, key="mf_change")
+
+        f4, f5, f6 = st.columns(3)
+        med_dose     = f4.number_input("New dose", min_value=0.0, step=25.0, key="mf_dose")
+        dose_unit    = f5.selectbox("Unit", MED_DOSE_UNITS, key="mf_unit")
+        frequency    = f6.selectbox("Frequency", MED_FREQUENCIES, key="mf_freq")
+
+        med_notes_field = st.text_input(
+            "Notes (optional)", placeholder="e.g. switching from aripiprazole, titrating up",
+            key="mf_notes"
+        )
+
+        submitted = st.form_submit_button("Save medication change", type="primary")
+        if submitted:
+            if not med_name.strip():
+                st.error("Medication name is required.")
+            else:
+                ok, msg = add_med_event(
+                    date=med_date, medication=med_name, dose=med_dose,
+                    dose_unit=dose_unit, frequency=frequency,
+                    change_type=change_type, notes=med_notes_field,
+                )
+                if ok:
+                    st.success(f"Logged: {change_type} {med_name} {med_dose}{dose_unit} on {med_date}.")
+                    med_log_df = load_med_log()
+                else:
+                    st.error(msg)
+
+    st.divider()
+
+    # ── Full history ───────────────────────────────────────
+    st.markdown("### Full change history")
+    if med_log_df.empty:
+        st.info("No events logged yet.")
+    else:
+        for _, m in med_log_df.iterrows():
+            dose_str = f"{m['dose']:.0f}{m['dose_unit']}" if pd.notna(m.get("dose")) else ""
+            note_str = f" — {m['notes']}" if m.get("notes") else ""
+            c1, c2 = st.columns([5, 1])
+            c1.markdown(
+                f"**{m['date']}** · {m['change_type']}: **{m['medication']}** "
+                f"{dose_str} {m.get('frequency','')}{note_str}"
+            )
+            if c2.button("Delete", key=f"del_med_{m['med_id']}", type="secondary"):
+                ok, msg = delete_med_event(str(m["med_id"]))
+                if ok:
+                    st.success("Entry deleted.")
+                    med_log_df = load_med_log()
+                else:
+                    st.error(msg)
+
+    st.divider()
+
+    # ── Chart: domain scores with medication overlays ──────
+    st.markdown("### Domain scores with medication change markers")
+    if not daily_filtered.empty and not med_log_df.empty:
+        fig_med = go.Figure()
+        dates = daily_filtered["date"].astype(str).tolist()
+        for d in selected_domains:
+            col = f"{d} Score %"
+            if col not in daily_filtered.columns:
+                continue
+            fig_med.add_trace(go.Scatter(
+                x=dates, y=daily_filtered[col].tolist(), mode="lines", name=d,
+                line=dict(color=DOMAIN_COLOURS.get(d, "#888"), width=2),
+                hovertemplate=f"{d}: %{{y:.1f}}%<extra></extra>",
+            ))
+        log_in_range = med_log_df[
+            (med_log_df["date"] >= filter_start) &
+            (med_log_df["date"] <= filter_end)
+        ] if filter_start else med_log_df
+        fig_med = add_med_log_overlays(fig_med, log_in_range)
+        fig_med.update_layout(
+            height=chart_height,
+            margin=dict(l=10, r=10, t=10, b=10),
+            yaxis=dict(range=[0, 100], title="Score %", ticksuffix="%"),
+            xaxis=dict(title=None),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            plot_bgcolor="white", paper_bgcolor="white",
+        )
+        st.plotly_chart(fig_med, use_container_width=True)
+        st.caption("Blue dashed lines = medication change events from the log above.")
+    elif daily_filtered.empty:
+        st.info("No daily data in the selected date range.")
+    else:
+        st.info("No medication events logged yet — add some above to see them on the chart.")
+
 # ── CLINICIAN EXPORT ──────────────────────────────────────
 with tab_export:
     st.markdown("## Clinician Export")
@@ -2876,6 +3147,7 @@ with tab_export:
         weights=weights,
         wide=wide_df,
         comments=comments_df,
+        med_log=med_log_df,
         window_days=export_window,
     )
 
