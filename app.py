@@ -57,6 +57,7 @@ NEW_FORM_TAB = "Updated Bipolar Form"
 SETTINGS_TAB = "Scoring Settings"
 BASELINE_TAB = "Baseline Settings"
 EPISODE_TAB  = "Episode Log"
+COMMENTS_TAB = "Journal Comments"
 
 @st.cache_resource
 def _gspread_client() -> gspread.Client:
@@ -79,6 +80,57 @@ def safe_worksheet(tab_name: str):
         return _workbook().worksheet(tab_name)
     except Exception:
         return None
+
+# ──────────────────────────────────────────────────────────
+# JOURNAL COMMENTS
+# ──────────────────────────────────────────────────────────
+# Stored in a Google Sheet tab with columns:
+#   submission_id | commented_at | comment_text
+# submission_id matches the wide table so comments are tied
+# to a specific submission, not just a date.
+
+@st.cache_data(ttl=30)
+def load_comments() -> pd.DataFrame:
+    """Load all journal comments from the Comments sheet tab."""
+    ws = safe_worksheet(COMMENTS_TAB)
+    if ws is None:
+        return pd.DataFrame(columns=["submission_id", "commented_at", "comment_text"])
+    values = ws.get_all_values()
+    if not values or len(values) < 2:
+        return pd.DataFrame(columns=["submission_id", "commented_at", "comment_text"])
+    headers = [str(h).strip() for h in values[0]]
+    df = pd.DataFrame(values[1:], columns=headers)
+    # Keep only rows with actual comment text
+    df = df[df["comment_text"].astype(str).str.strip() != ""].copy()
+    return df.reset_index(drop=True)
+
+
+def save_comment(submission_id: str, comment_text: str) -> tuple[bool, str]:
+    """Append a single comment row to the Comments sheet tab."""
+    ws = safe_worksheet(COMMENTS_TAB)
+    if ws is None:
+        return False, (
+            f"Worksheet '{COMMENTS_TAB}' not found. Create a tab with that exact name "
+            "in your Google Sheet, then comments will save correctly."
+        )
+    # Initialise headers if sheet is empty
+    existing = ws.get_all_values()
+    if not existing:
+        ws.append_row(["submission_id", "commented_at", "comment_text"])
+
+    import datetime as dt
+    commented_at = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ws.append_row([submission_id, commented_at, comment_text.strip()])
+    load_comments.clear()
+    return True, "Comment saved."
+
+
+def get_comments_for_submission(submission_id: str, comments_df: pd.DataFrame) -> list[dict]:
+    """Return all comments for a given submission_id, oldest first."""
+    if comments_df.empty or "submission_id" not in comments_df.columns:
+        return []
+    rows = comments_df[comments_df["submission_id"] == submission_id]
+    return rows.to_dict("records")
 
 # ──────────────────────────────────────────────────────────
 # BASELINE BAND DEFINITIONS
@@ -1466,6 +1518,7 @@ def generate_clinician_report(
     med_notes: pd.DataFrame,
     weights: dict,
     wide: pd.DataFrame,
+    comments: pd.DataFrame = None,
     window_days: int = 30,
 ) -> str:
     """Generate a structured plain-text / markdown clinician summary."""
@@ -1604,6 +1657,14 @@ def generate_clinician_report(
                 text = str(n.get("experience_description",""))[:300]
                 lines.append(f"- **{n['date']}** [{band.upper()}]: {text}" +
                              ("…" if len(str(n.get("experience_description",""))) > 300 else ""))
+                # Append any comments for this entry
+                if comments is not None and not comments.empty:
+                    sid = str(n.get("submission_id",""))
+                    entry_comments = get_comments_for_submission(sid, comments)
+                    for c in entry_comments:
+                        c_time = str(c.get("commented_at",""))[:16]
+                        c_text = str(c.get("comment_text",""))
+                        lines.append(f"  - 💬 *Note ({c_time}):* {c_text}")
         else:
             lines.append("*No elevated-band journal entries in this period.*")
     else:
@@ -1985,6 +2046,7 @@ episodes_df  = load_episodes()
 personal_bl  = compute_personal_baseline(daily_df, bands, pb_window, episodes=episodes_df)
 notes_df     = build_notes_df(wide_df, daily_df, bands)
 med_notes_df = build_med_notes_df(wide_df, daily_df)
+comments_df  = load_comments()
 
 # ──────────────────────────────────────────────────────────
 # GLOBAL FILTERS (sidebar)
@@ -2004,6 +2066,7 @@ with st.sidebar:
         load_episodes.clear()
         load_weights.clear()
         load_baseline_config.clear()
+        load_comments.clear()
         st.session_state["last_refreshed"] = _dt.datetime.now()
         st.rerun()
     st.divider()
@@ -2612,6 +2675,51 @@ with tab_journal:
             st.markdown(display_text)
             if kw_tags:
                 st.markdown(f"*Keywords: {kw_tags}*")
+
+            # ── Comments for this entry ──────────────────────
+            submission_id = str(entry.get("submission_id", ""))
+            entry_comments = get_comments_for_submission(submission_id, comments_df)
+
+            if entry_comments:
+                for c in entry_comments:
+                    c_time = str(c.get("commented_at", ""))[:16]
+                    c_text = str(c.get("comment_text", ""))
+                    st.markdown(
+                        f"""<div style="
+                            margin-left: 16px;
+                            margin-top: 6px;
+                            padding: 8px 12px;
+                            border-left: 3px solid rgba(100,100,100,0.3);
+                            background: rgba(100,100,100,0.05);
+                            border-radius: 3px;
+                            font-size: 0.9em;
+                            color: #444;
+                        ">
+                        💬 <em>{c_time}</em> — {c_text}
+                        </div>""",
+                        unsafe_allow_html=True,
+                    )
+
+            # Add comment input — use a unique key per submission
+            comment_key = f"comment_input_{submission_id}"
+            new_comment = st.text_input(
+                "Add a note to this entry",
+                placeholder="Type a note and press Enter…",
+                key=comment_key,
+                label_visibility="collapsed",
+            )
+            save_key = f"comment_save_{submission_id}"
+            if st.button("Save note", key=save_key, type="secondary"):
+                if new_comment.strip():
+                    ok, msg = save_comment(submission_id, new_comment.strip())
+                    if ok:
+                        st.success("Note saved.")
+                        comments_df = load_comments()
+                    else:
+                        st.error(msg)
+                else:
+                    st.warning("Note is empty.")
+
             st.divider()
 
     # Medication notes section
@@ -2761,6 +2869,7 @@ with tab_export:
         med_notes=med_notes_df,
         weights=weights,
         wide=wide_df,
+        comments=comments_df,
         window_days=export_window,
     )
 
