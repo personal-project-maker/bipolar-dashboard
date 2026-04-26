@@ -1892,6 +1892,8 @@ def generate_clinician_report(
     comments: pd.DataFrame = None,
     med_log: pd.DataFrame = None,
     cycle_log: pd.DataFrame = None,
+    review_model: pd.DataFrame = None,
+    comparison: pd.DataFrame = None,
     window_days: int = 30,
 ) -> str:
     """Generate a structured plain-text / markdown clinician summary."""
@@ -1954,6 +1956,7 @@ def generate_clinician_report(
 
     # ── Recent trends ───────────────────────────────────────
     lines.append("## Domain Trends (last 30 days)")
+    lines.append("*(Based on snapshot average — real-time data)*")
     period = daily[daily["date"] >= window_start] if not daily.empty else daily
     if not period.empty:
         lines.append("| Domain | Mean % | Peak % | Days in Well | Days in Watch+ | Days in Warning+ |")
@@ -1970,8 +1973,61 @@ def generate_clinician_report(
             n_warning = int((scores.apply(lambda s: classify_score(s, d, bands) in ["warning","critical"])).sum())
             lines.append(f"| {d} | {mean_s:.1f}% | {peak_s:.1f}% | {n_well} | {n_watch} | {n_warning} |")
     else:
-        lines.append("*No data in this period.*")
+        lines.append("*No snapshot data in this period.*")
     lines.append("")
+
+    # ── Review model ────────────────────────────────────────
+    lines.append("## Retrospective Review Scores (last 30 days)")
+    lines.append("*(Based on 'Review of today/yesterday' submissions — considered daily judgment)*")
+    if review_model is not None and not review_model.empty:
+        rev_period = review_model[review_model["date"] >= window_start]
+        if not rev_period.empty:
+            lines.append("| Domain | Mean % | Peak % |")
+            lines.append("|--------|--------|--------|")
+            for d in DOMAINS:
+                col = f"{d} Score %"
+                if col not in rev_period.columns:
+                    continue
+                scores = rev_period[col].dropna()
+                if scores.empty:
+                    continue
+                lines.append(f"| {d} | {scores.mean():.1f}% | {scores.max():.1f}% |")
+            lines.append(f"\n*Based on {len(rev_period)} review submissions.*")
+        else:
+            lines.append("*No reviews in this period.*")
+    else:
+        lines.append("*No review data available.*")
+    lines.append("")
+
+    # ── Review vs snapshot comparison ───────────────────────
+    if comparison is not None and not comparison.empty:
+        comp_period = comparison[comparison["date"] >= window_start]
+        if not comp_period.empty:
+            lines.append("## Review vs Snapshot Comparison")
+            lines.append(
+                "Positive values = review rated the day worse than snapshots suggested. "
+                "Negative = review rated better. A consistent direction is clinically meaningful."
+            )
+            lines.append("| Domain | Mean difference (pp) | Pattern |")
+            lines.append("|--------|---------------------|---------|")
+            for d in DOMAINS:
+                diff_col = f"{d} Difference (Review−Snapshot)"
+                if diff_col not in comp_period.columns:
+                    continue
+                vals = comp_period[diff_col].dropna()
+                if vals.empty:
+                    continue
+                mean_d = vals.mean()
+                pattern = (
+                    "Reviews consistently worse than real-time" if mean_d > 5
+                    else "Reviews consistently better than real-time" if mean_d < -5
+                    else "Broadly agree"
+                )
+                lines.append(f"| {d} | {mean_d:+.1f}pp | {pattern} |")
+            if "agreement" in comp_period.columns:
+                agree_pct = comp_period["agreement"].mean() * 100
+                lines.append(f"\n*Agreement rate (< 10pp difference): {agree_pct:.0f}% of compared days.*")
+            lines.append("")
 
     # ── Personal baseline ───────────────────────────────────
     lines.append("## Personal Baseline")
@@ -2603,6 +2659,24 @@ if not daily_df.empty:
             f"Raw (pre-multiplier) scores shown in italics above."
         )
 
+    # Review context — if a review exists for today or yesterday, show it
+    import datetime as _rev_dt
+    today_date = _rev_dt.date.today()
+    yesterday  = today_date - _rev_dt.timedelta(days=1)
+    for check_date, label in [(today_date, "today"), (yesterday, "yesterday")]:
+        if not review_model_df.empty and "date" in review_model_df.columns:
+            rev_row = review_model_df[review_model_df["date"] == check_date]
+            if not rev_row.empty:
+                rev_scores = []
+                for d in DOMAINS:
+                    sc = rev_row.iloc[0].get(f"{d} Score %")
+                    if sc is not None and not (isinstance(sc, float) and np.isnan(sc)):
+                        rev_scores.append(f"{d}: {sc:.0f}%")
+                if rev_scores:
+                    st.caption(
+                        f"📋 **Your review of {label}:** " + " · ".join(rev_scores)
+                    )
+
 st.divider()
 
 # ──────────────────────────────────────────────────────────
@@ -2659,17 +2733,22 @@ with tab_overview:
         filtered_domains = [d for d in selected_domains if d in DOMAINS]
 
         st.markdown("### All domains over time")
-        st.caption("Dotted green lines = Well band ceiling. Dashed grey = 7-day rolling average.")
+        st.caption(
+            "Solid lines = snapshot average (real-time). "
+            "Dashed lines of same colour = your review score for that day. "
+            "Dotted green = Well band ceiling."
+        )
         fig_all = go.Figure()
         dates = daily_filtered["date"].astype(str).tolist()
         for d in filtered_domains:
             col = f"{d} Score %"
             if col not in daily_filtered.columns:
                 continue
+            # Snapshot average — solid
             fig_all.add_trace(go.Scatter(
                 x=dates, y=daily_filtered[col].tolist(), mode="lines", name=d,
                 line=dict(color=DOMAIN_COLOURS[d], width=2),
-                hovertemplate=f"{d}: %{{y:.1f}}%<extra></extra>",
+                hovertemplate=f"{d} snapshot avg: %{{y:.1f}}%<extra></extra>",
             ))
             if show_rolling:
                 avg_col = f"{col} 7d Avg"
@@ -2680,6 +2759,19 @@ with tab_overview:
                         line=dict(color=DOMAIN_COLOURS[d], width=1, dash="dash"),
                         opacity=0.4,
                         hovertemplate=f"{d} 7d avg: %{{y:.1f}}%<extra></extra>",
+                    ))
+            # Review overlay — dashed, same colour, lighter
+            if not review_model_df.empty and col in review_model_df.columns:
+                rev_filtered_chart = _apply_date_filter(review_model_df)
+                if not rev_filtered_chart.empty:
+                    fig_all.add_trace(go.Scatter(
+                        x=rev_filtered_chart["date"].astype(str).tolist(),
+                        y=rev_filtered_chart[col].tolist(),
+                        mode="lines+markers", name=f"{d} review",
+                        line=dict(color=DOMAIN_COLOURS[d], width=1.5, dash="dot"),
+                        marker=dict(size=4, symbol="diamond"),
+                        opacity=0.6,
+                        hovertemplate=f"{d} review: %{{y:.1f}}%<extra></extra>",
                     ))
         # Smartwatch overlays
         watch_data = get_watch_series(daily_filtered, wide=wide_df)
@@ -2889,6 +2981,64 @@ with tab_analysis:
                 "Well Ceiling":      f"{bands.get(d, {}).get('well', '?')}%",
             })
         st.dataframe(pd.DataFrame(pb_rows), use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.markdown("### Review vs snapshot comparison")
+        st.caption(
+            "Shows whether your retrospective reviews of days align with how those days "
+            "felt in real time. A consistent pattern is clinically meaningful — "
+            "if reviews are always worse than snapshots, your memory of days may be "
+            "more negative than the lived experience. The reverse is also informative."
+        )
+        comp_analysis = _apply_date_filter(comparison_df) if not comparison_df.empty else comparison_df
+        if comp_analysis.empty:
+            st.info("Need days with both snapshots and a review to compute comparison.")
+        else:
+            # Summary metrics
+            ca1, ca2, ca3 = st.columns(3)
+            ca1.metric("Days compared", len(comp_analysis))
+            if "agreement" in comp_analysis.columns:
+                agree_pct = comp_analysis["agreement"].mean() * 100
+                ca2.metric("Agreement rate", f"{agree_pct:.0f}%",
+                           help="Days where review and snapshot average differ by < 10pp across all domains")
+            # Mean difference per domain
+            mean_diffs = {}
+            for d in DOMAINS:
+                diff_col = f"{d} Difference (Review−Snapshot)"
+                if diff_col in comp_analysis.columns:
+                    mean_diffs[d] = comp_analysis[diff_col].mean()
+            if mean_diffs:
+                worst_domain = max(mean_diffs, key=lambda d: abs(mean_diffs[d]))
+                ca3.metric("Largest mean divergence",
+                           f"{worst_domain}: {mean_diffs[worst_domain]:+.1f}pp")
+
+            # Divergence chart
+            diff_cols_a = [f"{d} Difference (Review−Snapshot)" for d in DOMAINS
+                           if f"{d} Difference (Review−Snapshot)" in comp_analysis.columns]
+            if diff_cols_a:
+                fig_ca = go.Figure()
+                for diff_col in diff_cols_a:
+                    domain = diff_col.split(" ")[0]
+                    fig_ca.add_trace(go.Scatter(
+                        x=comp_analysis["date"].astype(str).tolist(),
+                        y=comp_analysis[diff_col].tolist(),
+                        mode="lines+markers", name=domain,
+                        line=dict(color=DOMAIN_COLOURS.get(domain,"#888"), width=1.5),
+                        marker=dict(size=4),
+                        hovertemplate=f"{domain}: %{{y:+.1f}}pp<extra></extra>",
+                    ))
+                fig_ca.add_hline(y=0, line_color="rgba(0,0,0,0.25)", line_width=1,
+                                 annotation_text="No difference", annotation_position="right",
+                                 annotation_font_size=10)
+                fig_ca.update_layout(
+                    height=250, margin=dict(l=10,r=80,t=10,b=10),
+                    yaxis=dict(title="Review − Snapshot (pp)", zeroline=True),
+                    xaxis=dict(title=None),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    plot_bgcolor="white", paper_bgcolor="white",
+                )
+                st.plotly_chart(fig_ca, use_container_width=True)
+                st.caption("Above zero = review rated day worse than snapshots. Below = review rated better.")
 
         st.divider()
         st.markdown("### Psychosis insight analysis")
@@ -3188,7 +3338,7 @@ with tab_journal:
             elif has_snapshot:
                 type_badge = "📸 Snapshot"
 
-            # Domain context line
+            # Domain context line — snapshot scores
             domain_context = []
             for d in DOMAINS:
                 sc = entry.get(f"{d} Score %")
@@ -3196,6 +3346,20 @@ with tab_journal:
                     b = classify_score(sc, d, bands)
                     domain_context.append(f"{d}: {sc:.0f}% ({b})")
             context_str = " · ".join(domain_context) if domain_context else ""
+
+            # Review score for this day — look up from review_model_df
+            entry_date = entry.get("date")
+            review_context_str = ""
+            if not review_model_df.empty and entry_date is not None:
+                rev_row = review_model_df[review_model_df["date"] == entry_date]
+                if not rev_row.empty:
+                    rev_parts = []
+                    for d in DOMAINS:
+                        sc = rev_row.iloc[0].get(f"{d} Score %")
+                        if sc is not None and not (isinstance(sc, float) and np.isnan(sc)):
+                            rev_parts.append(f"{d}: {sc:.0f}%")
+                    if rev_parts:
+                        review_context_str = "📋 Review: " + " · ".join(rev_parts)
 
             # Highlight search term
             display_text = text
@@ -3214,13 +3378,14 @@ with tab_journal:
                 f"""<div style="
                     border-left: 4px solid {hex_colour};
                     padding: 12px 16px;
-                    margin-bottom: 12px;
+                    margin-bottom: 4px;
                     border-radius: 4px;
                     background: {hex_colour}18;
                 ">
                 <strong>{emoji} {date_str}</strong>
                 &nbsp;&nbsp;<span style="color:#666;font-size:0.85em">{context_str}</span>
                 &nbsp;&nbsp;<span style="font-size:0.8em;color:#999">{type_badge}</span>
+                {f'<br><span style="font-size:0.8em;color:#777">{review_context_str}</span>' if review_context_str else ""}
                 </div>""",
                 unsafe_allow_html=True,
             )
@@ -3673,6 +3838,8 @@ with tab_export:
         comments=comments_df,
         med_log=med_log_df,
         cycle_log=cycle_log_df,
+        review_model=review_model_df,
+        comparison=comparison_df,
         window_days=export_window,
     )
 
