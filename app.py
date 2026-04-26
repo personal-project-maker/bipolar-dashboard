@@ -3378,21 +3378,21 @@ with tab_journal:
                 f'<br><span style="font-size:0.8em;color:#777">{review_context_str}</span>'
                 if review_context_str else ""
             )
-            st.markdown(
-                f"""<div style="
-                    border-left: 4px solid {hex_colour};
-                    padding: 12px 16px;
-                    margin-bottom: 4px;
-                    border-radius: 4px;
-                    background: {hex_colour}18;
-                ">
-                <strong>{emoji} {date_str}</strong>
-                &nbsp;&nbsp;<span style="color:#666;font-size:0.85em">{context_str}</span>
-                &nbsp;&nbsp;<span style="font-size:0.8em;color:#999">{type_badge}</span>
-                {review_line}
-                </div>""",
-                unsafe_allow_html=True,
+            card_html = (
+                '<div style="'
+                f'border-left:4px solid {hex_colour};'
+                'padding:12px 16px;'
+                'margin-bottom:4px;'
+                'border-radius:4px;'
+                f'background:{hex_colour}22;'
+                '">'
+                f'<strong>{emoji} {date_str}</strong>'
+                f'&nbsp;&nbsp;<span style="color:#666;font-size:0.85em">{context_str}</span>'
+                f'&nbsp;&nbsp;<span style="font-size:0.8em;color:#999">{type_badge}</span>'
+                f'{review_line}'
+                '</div>'
             )
+            st.markdown(card_html, unsafe_allow_html=True)
             st.markdown(display_text)
             if kw_tags:
                 st.markdown(f"*Keywords: {kw_tags}*")
