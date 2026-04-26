@@ -245,9 +245,12 @@ QUESTION_CATALOG: list[dict[str, Any]] = [
     dict(code="obs_down_coming", text="Observations [I feel like I'm going to experience a down]",   group="observations", rtype="boolean_yes_no", polarity="higher_worse", domains=["Depression"],        order=430),
     dict(code="obs_mixed_coming",text="Observations [I feel like I'm going to experience a mixed]",  group="observations", rtype="boolean_yes_no", polarity="higher_worse", domains=["Psychosis","Mixed"], order=440),
     # NOTES
-    dict(code="experience_description", text="How would I describe my experiences?",                    group="notes", rtype="text", polarity="not_applicable", domains=[], order=470),
-    dict(code="medication_notes",       text="Have there been any medication changes? If so, what?",    group="notes", rtype="text", polarity="not_applicable", domains=[], order=480),
-    dict(code="submission_type",        text="What kind of entry is this?",                             group="notes", rtype="text", polarity="not_applicable", domains=[], order=5),
+    dict(code="experience_description", text="How would I describe my experiences?",                    group="notes", rtype="text",    polarity="not_applicable", domains=[], order=470),
+    dict(code="medication_notes",       text="Have there been any medication changes? If so, what?",    group="notes", rtype="text",    polarity="not_applicable", domains=[], order=480),
+    dict(code="submission_type",        text="What kind of entry is this?",                             group="notes", rtype="text",    polarity="not_applicable", domains=[], order=5),
+    # SMARTWATCH — external continuous metrics, not scored, display and correlation only
+    dict(code="watch_sleep_score",      text="What was my sleep score last night?",                     group="smartwatch", rtype="numeric", polarity="higher_better", domains=[], order=490, score_in_snapshot=False, score_in_daily=False),
+    dict(code="watch_energy_score",     text="What was my energy score today?",                         group="smartwatch", rtype="numeric", polarity="higher_better", domains=[], order=491, score_in_snapshot=False, score_in_daily=False),
 ]
 
 for _q in QUESTION_CATALOG:
@@ -323,6 +326,71 @@ def _effective_weight(code: str, domain: str, base_weights: dict[str, float]) ->
     base = base_weights.get(code, 0.0)
     multiplier = DOMAIN_WEIGHT_MULTIPLIERS.get(domain, {}).get(code, 1.0)
     return base * multiplier
+
+# ──────────────────────────────────────────────────────────
+# SMARTWATCH DATA HELPERS
+# ──────────────────────────────────────────────────────────
+WATCH_SLEEP_CODE  = "watch_sleep_score"
+WATCH_ENERGY_CODE = "watch_energy_score"
+
+def get_watch_series(daily: pd.DataFrame) -> pd.DataFrame:
+    """
+    Extract smartwatch sleep and energy scores from the daily table.
+    Returns a dataframe with date, sleep_score, energy_score columns.
+    Both are 0-100 continuous numeric, higher = better.
+    """
+    if daily.empty:
+        return pd.DataFrame(columns=["date", "sleep_score", "energy_score"])
+    out = daily[["date"]].copy()
+    out["sleep_score"]  = pd.to_numeric(daily.get(WATCH_SLEEP_CODE,  pd.Series(dtype=float)), errors="coerce")
+    out["energy_score"] = pd.to_numeric(daily.get(WATCH_ENERGY_CODE, pd.Series(dtype=float)), errors="coerce")
+    return out.dropna(subset=["sleep_score", "energy_score"], how="all").reset_index(drop=True)
+
+
+def compute_watch_correlations(daily: pd.DataFrame) -> pd.DataFrame:
+    """
+    Compute same-day and 1-day-lagged correlations between smartwatch scores
+    and domain scores.
+
+    Returns a DataFrame with columns:
+      metric | domain | same_day_r | lagged_r_1d | n
+    """
+    watch = get_watch_series(daily)
+    if watch.empty or len(watch) < 5:
+        return pd.DataFrame()
+
+    merged = daily[["date"] + [f"{d} Score %" for d in DOMAINS]].merge(watch, on="date", how="inner")
+    if merged.empty:
+        return pd.DataFrame()
+
+    rows = []
+    for metric_col, metric_label in [("sleep_score", "Sleep score"), ("energy_score", "Energy score")]:
+        if metric_col not in merged.columns or merged[metric_col].dropna().empty:
+            continue
+        for domain in DOMAINS:
+            score_col = f"{domain} Score %"
+            if score_col not in merged.columns:
+                continue
+            pair = merged[[metric_col, score_col]].dropna()
+            if len(pair) < 4:
+                continue
+            same_day_r = float(pair[metric_col].corr(pair[score_col]))
+
+            # 1-day lag: does yesterday's metric predict today's domain score?
+            lagged = merged[[metric_col, score_col]].copy()
+            lagged[f"{metric_col}_lag1"] = lagged[metric_col].shift(1)
+            lagged_pair = lagged[[f"{metric_col}_lag1", score_col]].dropna()
+            lagged_r = float(lagged_pair[f"{metric_col}_lag1"].corr(lagged_pair[score_col])) if len(lagged_pair) >= 4 else None
+
+            rows.append(dict(
+                metric=metric_label,
+                domain=domain,
+                same_day_r=round(same_day_r, 3),
+                lagged_r_1d=round(lagged_r, 3) if lagged_r is not None else None,
+                n=len(pair),
+            ))
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 # ──────────────────────────────────────────────────────────
 # META QUESTION ROLES
@@ -2240,6 +2308,8 @@ with st.sidebar:
         key="filter_domains",
     )
     show_rolling = st.toggle("Show 7-day rolling average", value=True, key="filter_rolling")
+    show_sleep_score  = st.toggle("Show smartwatch sleep score", value=False, key="filter_sleep_score")
+    show_energy_score = st.toggle("Show smartwatch energy score", value=False, key="filter_energy_score")
     st.divider()
     st.markdown("#### Chart height")
     chart_height = st.slider("px", 200, 600, 320, 20, key="filter_height")
@@ -2385,6 +2455,25 @@ with tab_overview:
                         opacity=0.4,
                         hovertemplate=f"{d} 7d avg: %{{y:.1f}}%<extra></extra>",
                     ))
+        # Smartwatch overlays
+        watch_data = get_watch_series(daily_filtered)
+        if not watch_data.empty:
+            watch_dates = watch_data["date"].astype(str).tolist()
+            if show_sleep_score and not watch_data["sleep_score"].dropna().empty:
+                fig_all.add_trace(go.Scatter(
+                    x=watch_dates, y=watch_data["sleep_score"].tolist(),
+                    mode="lines", name="Sleep score (watch)",
+                    line=dict(color="rgba(120,120,120,0.7)", width=1.5, dash="dot"),
+                    hovertemplate="Sleep score: %{y:.0f}<extra></extra>",
+                ))
+            if show_energy_score and not watch_data["energy_score"].dropna().empty:
+                fig_all.add_trace(go.Scatter(
+                    x=watch_dates, y=watch_data["energy_score"].tolist(),
+                    mode="lines", name="Energy score (watch)",
+                    line=dict(color="rgba(0,180,180,0.7)", width=1.5, dash="dot"),
+                    hovertemplate="Energy score: %{y:.0f}<extra></extra>",
+                ))
+
         for d in filtered_domains:
             b = bands.get(d, DEFAULT_BASELINE_BANDS.get(d, {}))
             fig_all.add_hline(y=b.get("well", 20), line_dash="dot",
@@ -2726,6 +2815,83 @@ with tab_analysis:
                 s2.metric("Nights < 6 hrs",   int((sleep["func_sleep_hours"] < 6).sum()))
                 s3.metric("Nights > 9 hrs",   int((sleep["func_sleep_hours"] > 9).sum()))
                 st.line_chart(sleep.set_index("date")[["func_sleep_hours"]])
+
+        st.divider()
+        st.markdown("### Smartwatch score analysis")
+        watch_df = get_watch_series(daily_filtered)
+        if watch_df.empty or (watch_df["sleep_score"].dropna().empty and watch_df["energy_score"].dropna().empty):
+            st.info("No smartwatch data in the selected date range.")
+        else:
+            # Latest values
+            latest_watch = watch_df.dropna(how="all", subset=["sleep_score","energy_score"]).iloc[-1] if not watch_df.empty else None
+            if latest_watch is not None:
+                w1, w2 = st.columns(2)
+                if pd.notna(latest_watch.get("sleep_score")):
+                    w1.metric("Latest sleep score", f"{latest_watch['sleep_score']:.0f} / 100",
+                              help="From smartwatch — higher is better")
+                if pd.notna(latest_watch.get("energy_score")):
+                    w2.metric("Latest energy score", f"{latest_watch['energy_score']:.0f} / 100",
+                              help="From smartwatch — higher is better")
+
+            # Chart
+            fig_watch = go.Figure()
+            dates_w = watch_df["date"].astype(str).tolist()
+            if not watch_df["sleep_score"].dropna().empty:
+                fig_watch.add_trace(go.Scatter(
+                    x=dates_w, y=watch_df["sleep_score"].tolist(),
+                    mode="lines+markers", name="Sleep score",
+                    line=dict(color="rgba(120,120,120,0.9)", width=2),
+                    hovertemplate="Sleep: %{y:.0f}<extra></extra>",
+                ))
+            if not watch_df["energy_score"].dropna().empty:
+                fig_watch.add_trace(go.Scatter(
+                    x=dates_w, y=watch_df["energy_score"].tolist(),
+                    mode="lines+markers", name="Energy score",
+                    line=dict(color="rgba(0,180,180,0.9)", width=2),
+                    hovertemplate="Energy: %{y:.0f}<extra></extra>",
+                ))
+            fig_watch.update_layout(
+                height=220, margin=dict(l=10, r=10, t=10, b=10),
+                yaxis=dict(range=[0, 100], title="Score", ticksuffix=""),
+                xaxis=dict(title=None),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                plot_bgcolor="white", paper_bgcolor="white",
+            )
+            st.plotly_chart(fig_watch, use_container_width=True)
+
+            # Correlation table
+            st.markdown("#### Correlation with domain scores")
+            st.caption(
+                "**Same-day r**: correlation between the watch score and domain score on the same day.  \n"
+                "**Lagged r (1d)**: correlation between yesterday's watch score and today's domain score — "
+                "a stronger signal for prediction.  \n"
+                "Values near -1 mean high watch score → low domain score (good). "
+                "Near 0 means no relationship. Near +1 means high watch score → high domain score (unusual for sleep/energy)."
+            )
+            corr_df = compute_watch_correlations(daily_filtered)
+            if corr_df.empty:
+                st.info("Need at least 4 days of overlapping data for correlation.")
+            else:
+                # Colour-code by strength and direction
+                def _colour_r(val):
+                    if pd.isna(val):
+                        return ""
+                    if val < -0.4:
+                        return "background-color: rgba(52,199,89,0.2)"   # strong negative = good
+                    if val < -0.2:
+                        return "background-color: rgba(52,199,89,0.1)"
+                    if val > 0.3:
+                        return "background-color: rgba(255,59,48,0.15)"  # positive = worth noting
+                    return ""
+
+                styled = corr_df.style.applymap(
+                    _colour_r, subset=["same_day_r", "lagged_r_1d"]
+                ).format({"same_day_r": "{:.3f}", "lagged_r_1d": "{:.3f}"}, na_rep="—")
+                st.dataframe(styled, use_container_width=True, hide_index=True)
+                st.caption(
+                    "Green = watch score negatively correlated with domain score (higher watch → lower symptoms). "
+                    "Red = unexpected positive correlation worth investigating."
+                )
 
 # ── JOURNAL ───────────────────────────────────────────────
 with tab_journal:
