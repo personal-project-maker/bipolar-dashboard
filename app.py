@@ -3072,7 +3072,7 @@ with tab_medications:
     if med_log_df.empty:
         st.info("No events logged yet.")
     else:
-        for _, m in med_log_df.iterrows():
+        for row_idx, (_, m) in enumerate(med_log_df.iterrows()):
             dose_str = f"{m['dose']:.0f}{m['dose_unit']}" if pd.notna(m.get("dose")) else ""
             note_str = f" — {m['notes']}" if m.get("notes") else ""
             c1, c2 = st.columns([5, 1])
@@ -3080,7 +3080,7 @@ with tab_medications:
                 f"**{m['date']}** · {m['change_type']}: **{m['medication']}** "
                 f"{dose_str} {m.get('frequency','')}{note_str}"
             )
-            if c2.button("Delete", key=f"del_med_{m['med_id']}", type="secondary"):
+            if c2.button("Delete", key=f"del_med_{m['med_id']}_{row_idx}", type="secondary"):
                 ok, msg = delete_med_event(str(m["med_id"]))
                 if ok:
                     st.success("Entry deleted.")
