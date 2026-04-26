@@ -3374,6 +3374,10 @@ with tab_journal:
             # Keyword tags
             kw_tags = " ".join(f"`{kw}`" for kw in keywords[:6]) if keywords else ""
 
+            review_line = (
+                f'<br><span style="font-size:0.8em;color:#777">{review_context_str}</span>'
+                if review_context_str else ""
+            )
             st.markdown(
                 f"""<div style="
                     border-left: 4px solid {hex_colour};
@@ -3385,7 +3389,7 @@ with tab_journal:
                 <strong>{emoji} {date_str}</strong>
                 &nbsp;&nbsp;<span style="color:#666;font-size:0.85em">{context_str}</span>
                 &nbsp;&nbsp;<span style="font-size:0.8em;color:#999">{type_badge}</span>
-                {f'<br><span style="font-size:0.8em;color:#777">{review_context_str}</span>' if review_context_str else ""}
+                {review_line}
                 </div>""",
                 unsafe_allow_html=True,
             )
