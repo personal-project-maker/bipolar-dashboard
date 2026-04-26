@@ -59,6 +59,7 @@ BASELINE_TAB = "Baseline Settings"
 EPISODE_TAB  = "Episode Log"
 COMMENTS_TAB = "Journal Comments"
 MED_LOG_TAB  = "Medication Log"
+CYCLE_LOG_TAB = "Cycle Log"
 
 @st.cache_resource
 def _gspread_client() -> gspread.Client:
@@ -1678,6 +1679,153 @@ def add_med_log_overlays(fig: go.Figure, med_log: pd.DataFrame) -> go.Figure:
     return fig
 
 # ──────────────────────────────────────────────────────────
+# CYCLE LOG
+# ──────────────────────────────────────────────────────────
+# Stores menstrual cycle events: period start, period end, ovulation.
+# Used to overlay cycle phase on domain score charts and to analyse
+# whether episode clustering correlates with cycle phase over time.
+# Sheet columns: cycle_id | date | event_type | notes
+
+CYCLE_EVENT_TYPES = ["Period start", "Period end", "Ovulation"]
+
+@st.cache_data(ttl=30)
+def load_cycle_log() -> pd.DataFrame:
+    ws = safe_worksheet(CYCLE_LOG_TAB)
+    if ws is None:
+        return pd.DataFrame(columns=["cycle_id","date","event_type","notes"])
+    try:
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return pd.DataFrame(columns=["cycle_id","date","event_type","notes"])
+        df = pd.DataFrame(values[1:], columns=values[0])
+        df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date
+        return df.dropna(subset=["date"]).sort_values("date", ascending=False).reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame(columns=["cycle_id","date","event_type","notes"])
+
+def _save_cycle_log(df: pd.DataFrame) -> tuple[bool, str]:
+    ws = safe_worksheet(CYCLE_LOG_TAB)
+    if ws is None:
+        return False, (
+            f"Worksheet '{CYCLE_LOG_TAB}' not found. Create a tab with that exact name "
+            "in your Google Sheet, then cycle events will save correctly."
+        )
+    cols = ["cycle_id","date","event_type","notes"]
+    rows = [cols] + [[str(row.get(c,"")) for c in cols] for _, row in df.iterrows()]
+    ws.clear()
+    ws.update("A1", rows)
+    load_cycle_log.clear()
+    return True, "Cycle log saved."
+
+def add_cycle_event(date, event_type: str, notes: str = "") -> tuple[bool, str]:
+    import hashlib
+    existing = load_cycle_log()
+    cycle_id = hashlib.md5(f"{date}{event_type}".encode()).hexdigest()[:8]
+    new_row = pd.DataFrame([{
+        "cycle_id": cycle_id, "date": date,
+        "event_type": event_type, "notes": notes.strip(),
+    }])
+    updated = pd.concat([existing, new_row], ignore_index=True)
+    ok, msg = _save_cycle_log(updated)
+    if ok:
+        load_cycle_log.clear()
+    return ok, msg
+
+def delete_cycle_event(cycle_id: str) -> tuple[bool, str]:
+    existing = load_cycle_log()
+    updated = existing[existing["cycle_id"] != cycle_id].reset_index(drop=True)
+    return _save_cycle_log(updated)
+
+def compute_cycle_phase(date, cycle_log: pd.DataFrame) -> str | None:
+    """
+    Given a date and the cycle log, return the estimated cycle phase:
+      'menstrual'  — within a period (between period start and end)
+      'follicular' — between period end and ovulation
+      'ovulation'  — within 1 day of logged ovulation
+      'luteal'     — between ovulation and next period start
+      'late_luteal'— last 5 days before next period start (highest vulnerability)
+    Returns None if insufficient data to determine phase.
+    """
+    if cycle_log.empty:
+        return None
+    import datetime as _dt
+    log = cycle_log.sort_values("date")
+
+    starts    = log[log["event_type"] == "Period start"]["date"].tolist()
+    ends      = log[log["event_type"] == "Period end"]["date"].tolist()
+    ovulations= log[log["event_type"] == "Ovulation"]["date"].tolist()
+
+    # Check if date falls within a period
+    for s in starts:
+        matching_ends = [e for e in ends if e >= s]
+        end = min(matching_ends) if matching_ends else s + _dt.timedelta(days=7)
+        if s <= date <= end:
+            return "menstrual"
+
+    # Check ovulation proximity
+    for ov in ovulations:
+        if abs((date - ov).days) <= 1:
+            return "ovulation"
+
+    # Find surrounding events
+    prev_ov   = max((ov for ov in ovulations if ov <= date), default=None)
+    next_start= min((s  for s  in starts    if s  >  date), default=None)
+    prev_end  = max((e  for e  in ends      if e  <  date), default=None)
+
+    if prev_ov and next_start:
+        days_to_next = (next_start - date).days
+        if days_to_next <= 5:
+            return "late_luteal"
+        return "luteal"
+
+    if prev_end and prev_ov is None:
+        return "follicular"
+
+    return None
+
+def add_cycle_overlays(fig: go.Figure, cycle_log: pd.DataFrame) -> go.Figure:
+    """Add vertical markers for cycle events on a Plotly figure."""
+    if cycle_log.empty:
+        return fig
+    event_styles = {
+        "Period start": ("rgba(220,50,50,0.6)",  "rgba(220,50,50,1)",  "🩸"),
+        "Period end":   ("rgba(220,50,50,0.3)",  "rgba(220,50,50,0.7)","🩸"),
+        "Ovulation":    ("rgba(50,150,220,0.6)", "rgba(50,150,220,1)", "🥚"),
+    }
+    for _, row in cycle_log.iterrows():
+        style = event_styles.get(row["event_type"], ("rgba(150,150,150,0.5)", "rgba(150,150,150,1)", ""))
+        emoji = style[2]
+        label = f"{emoji} {row['event_type']}"
+        if row.get("notes"):
+            label += f" — {str(row['notes'])[:20]}"
+        fig = _add_vline_date(fig, x=str(row["date"]), label=label,
+                              line_color=style[0], font_color=style[1],
+                              line_dash="dot")
+    return fig
+
+def compute_phase_domain_means(daily: pd.DataFrame, cycle_log: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each day in daily, assign a cycle phase, then compute mean domain
+    scores per phase. Returns a pivot table useful for spotting phase-linked patterns.
+    """
+    if daily.empty or cycle_log.empty:
+        return pd.DataFrame()
+    daily_copy = daily.copy()
+    daily_copy["cycle_phase"] = daily_copy["date"].apply(
+        lambda d: compute_cycle_phase(d, cycle_log)
+    )
+    daily_copy = daily_copy.dropna(subset=["cycle_phase"])
+    if daily_copy.empty:
+        return pd.DataFrame()
+    score_cols = [f"{d} Score %" for d in DOMAINS]
+    available  = [c for c in score_cols if c in daily_copy.columns]
+    return (
+        daily_copy.groupby("cycle_phase")[available]
+        .agg(["mean","count"])
+        .round(1)
+    )
+
+# ──────────────────────────────────────────────────────────
 # CLINICIAN EXPORT
 # ──────────────────────────────────────────────────────────
 def generate_clinician_report(
@@ -1691,6 +1839,7 @@ def generate_clinician_report(
     wide: pd.DataFrame,
     comments: pd.DataFrame = None,
     med_log: pd.DataFrame = None,
+    cycle_log: pd.DataFrame = None,
     window_days: int = 30,
 ) -> str:
     """Generate a structured plain-text / markdown clinician summary."""
@@ -1845,6 +1994,26 @@ def generate_clinician_report(
             med_notes.empty):
         lines.append("*No medication information recorded.*")
     lines.append("")
+
+    # ── Cycle log ───────────────────────────────────────────
+    if cycle_log is not None and not cycle_log.empty:
+        lines.append("## Menstrual Cycle")
+        import datetime as _exp_dt
+        today = _exp_dt.date.today()
+        current_phase = compute_cycle_phase(today, cycle_log)
+        if current_phase:
+            lines.append(f"**Current phase (today):** {current_phase.replace('_', ' ').title()}")
+        recent_cycle = cycle_log[cycle_log["date"] >= window_start]
+        if not recent_cycle.empty:
+            lines.append(f"\n**Cycle events in this period:**")
+            for _, row in recent_cycle.sort_values("date").iterrows():
+                note_str = f" — {row['notes']}" if row.get("notes") else ""
+                lines.append(f"- {row['date']}: {row['event_type']}{note_str}")
+        phase_means = compute_phase_domain_means(daily, cycle_log)
+        if not phase_means.empty:
+            lines.append("\n**Mean domain scores by cycle phase (all time):**")
+            lines.append(phase_means.to_string())
+        lines.append("")
 
     # ── Journal highlights ──────────────────────────────────
     lines.append("## Journal Highlights")
@@ -2258,6 +2427,7 @@ personal_bl  = compute_personal_baseline(daily_df, bands, pb_window, episodes=ep
 notes_df     = build_notes_df(wide_df, daily_df, bands)
 med_notes_df = build_med_notes_df(wide_df, daily_df)
 med_log_df   = load_med_log()
+cycle_log_df = load_cycle_log()
 comments_df  = load_comments()
 
 # ──────────────────────────────────────────────────────────
@@ -2280,6 +2450,7 @@ with st.sidebar:
         load_baseline_config.clear()
         load_comments.clear()
         load_med_log.clear()
+        load_cycle_log.clear()
         st.session_state["last_refreshed"] = _dt.datetime.now()
         st.rerun()
     st.divider()
@@ -2383,10 +2554,10 @@ st.divider()
 # TABS
 # ──────────────────────────────────────────────────────────
 (tab_overview, tab_snapshots_tab, tab_analysis,
- tab_baseline, tab_journal, tab_episodes, tab_medications, tab_export,
+ tab_baseline, tab_journal, tab_episodes, tab_medications, tab_cycle, tab_export,
  tab_questions, tab_daily, tab_data, tab_settings) = st.tabs([
     "Overview", "Snapshots", "Analysis", "Baselines",
-    "Journal", "Episodes", "Medications", "Clinician Export",
+    "Journal", "Episodes", "Medications", "Cycle", "Clinician Export",
     "Questions", "Daily Model", "Data Layer", "Settings"
 ])
 
@@ -2498,6 +2669,14 @@ with tab_overview:
                 (med_log_df["date"] <= filter_end)
             ] if filter_start else med_log_df
             fig_all = add_med_log_overlays(fig_all, log_in_range)
+
+        # Cycle event overlays
+        if not cycle_log_df.empty:
+            cycle_in_range = cycle_log_df[
+                (cycle_log_df["date"] >= filter_start) &
+                (cycle_log_df["date"] <= filter_end)
+            ] if filter_start else cycle_log_df
+            fig_all = add_cycle_overlays(fig_all, cycle_in_range)
 
         fig_all.update_layout(
             height=chart_height, margin=dict(l=10, r=10, t=10, b=10),
@@ -3290,6 +3469,129 @@ with tab_medications:
     else:
         st.info("No medication events logged yet — add some above to see them on the chart.")
 
+# ── CYCLE ─────────────────────────────────────────────────
+with tab_cycle:
+    st.markdown("## Menstrual Cycle Tracking")
+    st.caption(
+        "Log period start, period end, and ovulation dates. "
+        "Events appear as markers on the domain score charts. "
+        "Over time this data will show whether your scores cluster "
+        "around particular cycle phases — the luteal phase in particular "
+        "is a known vulnerability window in bipolar."
+    )
+
+    if not safe_worksheet(CYCLE_LOG_TAB):
+        st.warning(
+            f"Worksheet '{CYCLE_LOG_TAB}' not found. Create a tab with that exact name "
+            "in your Google Sheet and events will save correctly."
+        )
+
+    # ── Current cycle status ───────────────────────────────
+    import datetime as _cyc_dt
+    today = _cyc_dt.date.today()
+    current_phase = compute_cycle_phase(today, cycle_log_df)
+    phase_labels = {
+        "menstrual":   ("🩸 Menstrual phase",  "Period currently active."),
+        "follicular":  ("🌱 Follicular phase",  "Between period end and ovulation."),
+        "ovulation":   ("🥚 Ovulation",         "Around ovulation — fertile window."),
+        "luteal":      ("🌕 Luteal phase",       "Between ovulation and next period."),
+        "late_luteal": ("⚠️ Late luteal phase",  "Final 5 days before period — highest vulnerability window for mood instability."),
+    }
+    if current_phase and current_phase in phase_labels:
+        label, description = phase_labels[current_phase]
+        st.info(f"**Current phase: {label}**  \n{description}")
+    else:
+        st.info("Current phase unknown — log some cycle events to enable phase tracking.")
+
+    st.divider()
+
+    # ── Log new event ──────────────────────────────────────
+    st.markdown("### Log a cycle event")
+    with st.form("cycle_log_form", clear_on_submit=True):
+        cy1, cy2 = st.columns(2)
+        cy_date  = cy1.date_input("Date", value=today, key="cy_date")
+        cy_event = cy2.selectbox("Event", CYCLE_EVENT_TYPES, key="cy_event")
+        cy_notes = st.text_input("Notes (optional)", placeholder="e.g. spotting, cramps, light flow",
+                                 key="cy_notes")
+        cy_submitted = st.form_submit_button("Save cycle event", type="primary")
+        if cy_submitted:
+            ok, msg = add_cycle_event(cy_date, cy_event, cy_notes)
+            if ok:
+                st.success(f"Logged: {cy_event} on {cy_date}.")
+                cycle_log_df = load_cycle_log()
+            else:
+                st.error(msg)
+
+    st.divider()
+
+    # ── History ────────────────────────────────────────────
+    st.markdown("### Event history")
+    if cycle_log_df.empty:
+        st.info("No cycle events logged yet.")
+    else:
+        for row_idx, (_, row) in enumerate(cycle_log_df.iterrows()):
+            note_str = f" — {row['notes']}" if row.get("notes") else ""
+            c1, c2 = st.columns([5, 1])
+            event_emoji = {"Period start": "🩸", "Period end": "🩸", "Ovulation": "🥚"}.get(row["event_type"], "")
+            c1.markdown(f"**{row['date']}** {event_emoji} {row['event_type']}{note_str}")
+            if c2.button("Delete", key=f"del_cy_{row['cycle_id']}_{row_idx}", type="secondary"):
+                ok, msg = delete_cycle_event(str(row["cycle_id"]))
+                if ok:
+                    st.success("Deleted.")
+                    cycle_log_df = load_cycle_log()
+                else:
+                    st.error(msg)
+
+    st.divider()
+
+    # ── Chart with cycle overlays ──────────────────────────
+    st.markdown("### Domain scores with cycle markers")
+    if not daily_filtered.empty:
+        fig_cy = go.Figure()
+        dates_cy = daily_filtered["date"].astype(str).tolist()
+        for d in selected_domains:
+            col = f"{d} Score %"
+            if col not in daily_filtered.columns:
+                continue
+            fig_cy.add_trace(go.Scatter(
+                x=dates_cy, y=daily_filtered[col].tolist(),
+                mode="lines", name=d,
+                line=dict(color=DOMAIN_COLOURS.get(d, "#888"), width=2),
+                hovertemplate=f"{d}: %{{y:.1f}}%<extra></extra>",
+            ))
+        cycle_in_range = cycle_log_df[
+            (cycle_log_df["date"] >= filter_start) &
+            (cycle_log_df["date"] <= filter_end)
+        ] if (filter_start and not cycle_log_df.empty) else cycle_log_df
+        fig_cy = add_cycle_overlays(fig_cy, cycle_in_range)
+        fig_cy.update_layout(
+            height=chart_height,
+            margin=dict(l=10, r=10, t=10, b=10),
+            yaxis=dict(range=[0, 100], title="Score %", ticksuffix="%"),
+            xaxis=dict(title=None),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            plot_bgcolor="white", paper_bgcolor="white",
+        )
+        st.plotly_chart(fig_cy, use_container_width=True)
+        st.caption("🩸 Red = period start/end  ·  🥚 Blue = ovulation")
+    else:
+        st.info("No daily data in the selected date range.")
+
+    st.divider()
+
+    # ── Phase analysis ─────────────────────────────────────
+    st.markdown("### Mean scores by cycle phase")
+    st.caption(
+        "Once enough cycle events are logged, this table shows your mean domain "
+        "scores during each phase. If luteal or late luteal scores are consistently "
+        "higher, that confirms a cycle-phase vulnerability pattern."
+    )
+    phase_df = compute_phase_domain_means(daily_df, cycle_log_df)
+    if phase_df.empty:
+        st.info("Not enough data yet — log more cycle events and continue daily tracking.")
+    else:
+        st.dataframe(phase_df, use_container_width=True)
+
 # ── CLINICIAN EXPORT ──────────────────────────────────────
 with tab_export:
     st.markdown("## Clinician Export")
@@ -3315,6 +3617,7 @@ with tab_export:
         wide=wide_df,
         comments=comments_df,
         med_log=med_log_df,
+        cycle_log=cycle_log_df,
         window_days=export_window,
     )
 
