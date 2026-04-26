@@ -334,21 +334,51 @@ def _effective_weight(code: str, domain: str, base_weights: dict[str, float]) ->
 WATCH_SLEEP_CODE  = "watch_sleep_score"
 WATCH_ENERGY_CODE = "watch_energy_score"
 
-def get_watch_series(daily: pd.DataFrame) -> pd.DataFrame:
+def get_watch_series(daily: pd.DataFrame, wide: pd.DataFrame = None) -> pd.DataFrame:
     """
-    Extract smartwatch sleep and energy scores from the daily table.
-    Returns a dataframe with date, sleep_score, energy_score columns.
-    Both are 0-100 continuous numeric, higher = better.
+    Extract smartwatch sleep and energy scores.
+
+    Watch scores only appear in review entries, which may not be the
+    first submission of the day. So we pull from the full wide table
+    (all submissions) and take the last non-null value per day, then
+    merge onto the daily table by date.
+
+    Falls back to reading from daily directly if wide is not provided.
+    Both scores are 0-100 continuous numeric, higher = better.
     """
     if daily.empty:
         return pd.DataFrame(columns=["date", "sleep_score", "energy_score"])
+
     out = daily[["date"]].copy()
-    out["sleep_score"]  = pd.to_numeric(daily.get(WATCH_SLEEP_CODE,  pd.Series(dtype=float)), errors="coerce")
-    out["energy_score"] = pd.to_numeric(daily.get(WATCH_ENERGY_CODE, pd.Series(dtype=float)), errors="coerce")
-    return out.dropna(subset=["sleep_score", "energy_score"], how="all").reset_index(drop=True)
+
+    if wide is not None and not wide.empty:
+        wide_copy = wide.copy()
+        wide_copy["date"] = wide_copy["submitted_date"]
+        for code, col_name in [(WATCH_SLEEP_CODE, "sleep_score"),
+                               (WATCH_ENERGY_CODE, "energy_score")]:
+            if code in wide_copy.columns:
+                per_day = (
+                    wide_copy[wide_copy[code].notna()]
+                    .groupby("date")[code]
+                    .last()
+                    .reset_index()
+                    .rename(columns={code: col_name})
+                )
+                out = out.merge(per_day, on="date", how="left")
+            else:
+                out[col_name] = pd.NA
+    else:
+        out["sleep_score"]  = pd.to_numeric(
+            daily.get(WATCH_SLEEP_CODE,  pd.Series(dtype=float)), errors="coerce")
+        out["energy_score"] = pd.to_numeric(
+            daily.get(WATCH_ENERGY_CODE, pd.Series(dtype=float)), errors="coerce")
+
+    out["sleep_score"]  = pd.to_numeric(out.get("sleep_score"),  errors="coerce")
+    out["energy_score"] = pd.to_numeric(out.get("energy_score"), errors="coerce")
+    return out.dropna(subset=["sleep_score","energy_score"], how="all").reset_index(drop=True)
 
 
-def compute_watch_correlations(daily: pd.DataFrame) -> pd.DataFrame:
+def compute_watch_correlations(daily: pd.DataFrame, wide: pd.DataFrame = None) -> pd.DataFrame:
     """
     Compute same-day and 1-day-lagged correlations between smartwatch scores
     and domain scores.
@@ -356,7 +386,7 @@ def compute_watch_correlations(daily: pd.DataFrame) -> pd.DataFrame:
     Returns a DataFrame with columns:
       metric | domain | same_day_r | lagged_r_1d | n
     """
-    watch = get_watch_series(daily)
+    watch = get_watch_series(daily, wide=wide)
     if watch.empty or len(watch) < 5:
         return pd.DataFrame()
 
@@ -624,147 +654,169 @@ def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
     return src.reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────
-# DAILY AGGREGATE MODEL
-# Replaces the old "first submission of day" approach.
-# Groups all submissions by date and produces one row per day by:
-#   - Averaging numeric/scale scores, weighting snapshots at 1.0 and reviews at 0.5
-#   - Boolean flags: any-true across all submissions that day
-#   - Text fields: taken from the review submission if present, else latest snapshot
-#   - Sleep: taken from review submissions only (that's where it's meaningful)
+# THREE-MODEL DAILY SYSTEM
+#
+# SNAPSHOT MODEL: mean of all Snapshot submissions for a given day.
+#   Captures how the day felt in real time, averaged across check-ins.
+#
+# REVIEW MODEL: the Review of today or Review of yesterday submission,
+#   attributed to the correct calendar day.
+#   "Review of yesterday" submitted on date D is attributed to D-1.
+#   This is a single considered retrospective score per day.
+#
+# COMPARISON: for days with both a snapshot mean and a review,
+#   compute the difference (review - snapshot average) per domain.
+#   Positive = review rated worse than snapshots suggested.
+#   Negative = review rated better than snapshots suggested.
 # ──────────────────────────────────────────────────────────
-def build_daily_aggregate(wide: pd.DataFrame, weights: dict[str, float]) -> pd.DataFrame:
+
+FORM_SNAPSHOT         = "snapshot"
+FORM_REVIEW_TODAY     = "review of today (evening)"
+FORM_REVIEW_YESTERDAY = "review of yesterday"
+
+def _get_form_type(row: pd.Series) -> str:
+    """Return normalised submission type string from the form field."""
+    val = str(row.get("submission_type", "") or "").strip().lower()
+    if FORM_REVIEW_YESTERDAY in val:
+        return FORM_REVIEW_YESTERDAY
+    if FORM_REVIEW_TODAY in val or "review" in val:
+        return FORM_REVIEW_TODAY
+    return FORM_SNAPSHOT
+
+def _score_submissions(wide: pd.DataFrame, weights: dict) -> pd.DataFrame:
+    """Score every individual submission and attach form_type and review_date."""
+    if wide.empty:
+        return pd.DataFrame()
+    scored = build_scored_table(wide, weights, daily_only=False)
+
+    # Map submission_type from wide by submission_id
+    type_map = wide.set_index("submission_id").apply(_get_form_type, axis=1).to_dict()
+    scored["form_type"] = scored["submission_id"].map(type_map).fillna(FORM_SNAPSHOT)
+
+    # review_date: for "review of yesterday", attribute to the previous calendar day
+    import datetime as _rdt
+    def _review_date(row):
+        if row["form_type"] == FORM_REVIEW_YESTERDAY:
+            return row["submitted_date"] - _rdt.timedelta(days=1)
+        return row["submitted_date"]
+
+    if "submitted_date" not in scored.columns:
+        date_map = wide.set_index("submission_id")["submitted_date"].to_dict()
+        scored["submitted_date"] = scored["submission_id"].map(date_map)
+
+    scored["review_date"] = scored.apply(_review_date, axis=1)
+    return scored
+
+def build_snapshot_model(wide: pd.DataFrame, weights: dict) -> pd.DataFrame:
     """
-    Produce one scored row per calendar day by aggregating all submissions.
-    Snapshot submissions are weighted at SNAPSHOT_WEIGHT (1.0).
-    Review submissions are weighted at REVIEW_WEIGHT (0.5).
+    One row per calendar day: mean of all Snapshot submissions for that day.
+    Days with no snapshots are excluded.
     """
     if wide.empty:
         return pd.DataFrame()
 
-    by_code = _catalog_by_code()
-
-    # Score every individual submission (full snapshot mode)
-    scored_all = build_scored_table(wide, weights, daily_only=False)
-
-    # Attach submission_type_derived directly from wide using positional alignment
-    # (both share the same index after build_scored_table resets it)
-    if "submission_type_derived" in wide.columns:
-        # Map by submission_id for safety
-        type_map = wide.set_index("submission_id")["submission_type_derived"].to_dict()
-        scored_all["submission_type_derived"] = scored_all["submission_id"].map(type_map).fillna(SUBMISSION_TYPE_SNAPSHOT)
-    else:
-        scored_all["submission_type_derived"] = SUBMISSION_TYPE_SNAPSHOT
-
-    # Also bring submitted_date into scored_all if not already present
-    if "submitted_date" not in scored_all.columns and "submitted_date" in wide.columns:
-        date_map = wide.set_index("submission_id")["submitted_date"].to_dict()
-        scored_all["submitted_date"] = scored_all["submission_id"].map(date_map)
-
-    # Per-submission weight scalar
-    scored_all["_sw"] = scored_all["submission_type_derived"].map({
-        SUBMISSION_TYPE_SNAPSHOT: SNAPSHOT_WEIGHT,
-        SUBMISSION_TYPE_REVIEW:   REVIEW_WEIGHT,
-    }).fillna(SNAPSHOT_WEIGHT)
-
-    # ── Aggregate by date ────────────────────────────────────
-    agg_rows: list[dict] = []
-
-    for date, group in scored_all.groupby("submitted_date"):
-        row: dict = {"date": date}
-
-        # Submission counts
-        row["n_snapshots"] = int((group["submission_type_derived"] == SUBMISSION_TYPE_SNAPSHOT).sum())
-        row["n_reviews"]   = int((group["submission_type_derived"] == SUBMISSION_TYPE_REVIEW).sum())
-        row["n_total"]     = len(group)
-
-        weights_arr = group["_sw"].values.astype(float)
-        total_w     = weights_arr.sum()
-
-        # Domain scores — weighted mean across all submissions
-        for domain in DOMAINS:
-            col = f"{domain} Score %"
-            col_raw = f"{domain} Score % (raw)"
-            if col in group.columns:
-                row[col]     = float(np.average(group[col].fillna(0), weights=weights_arr))
-            if col_raw in group.columns:
-                row[col_raw] = float(np.average(group[col_raw].fillna(0), weights=weights_arr))
-
-        row["Overall Score %"] = float(np.mean([row.get(f"{d} Score %", 0) for d in DOMAINS]))
-
-        # Meta multiplier — weighted mean
-        if "meta_multiplier" in group.columns:
-            row["meta_multiplier"] = float(np.average(
-                group["meta_multiplier"].fillna(1.0), weights=weights_arr
-            ))
-
-        # Raw question scores
-        for code, meta in by_code.items():
-            if code not in wide.columns:
-                continue
-            # Merge raw values from wide into group via submission_id
-            raw_vals = wide[wide["submitted_date"] == date][[code, "submission_type_derived"]].copy()
-            if raw_vals.empty:
-                continue
-
-            if meta["rtype"] == "boolean_yes_no":
-                # Any-true across all submissions that day
-                row[code] = bool(raw_vals[code].any())
-
-            elif code in ("func_sleep_hours", "func_sleep_quality"):
-                # Sleep only from review submissions; fall back to any if no review
-                review_vals = raw_vals[raw_vals["submission_type_derived"] == SUBMISSION_TYPE_REVIEW][code].dropna()
-                if not review_vals.empty:
-                    row[code] = float(review_vals.mean())
-                else:
-                    all_vals = raw_vals[code].dropna()
-                    row[code] = float(all_vals.mean()) if not all_vals.empty else np.nan
-
-            elif meta["rtype"] in ("scale_1_5", "numeric"):
-                # Weighted mean (snapshot 1.0, review 0.5)
-                rv = raw_vals[[code, "submission_type_derived"]].copy()
-                rv["_w"] = rv["submission_type_derived"].map({
-                    SUBMISSION_TYPE_SNAPSHOT: SNAPSHOT_WEIGHT,
-                    SUBMISSION_TYPE_REVIEW:   REVIEW_WEIGHT,
-                }).fillna(SNAPSHOT_WEIGHT)
-                rv = rv.dropna(subset=[code])
-                if not rv.empty:
-                    row[code] = float(np.average(
-                        pd.to_numeric(rv[code], errors="coerce").fillna(0),
-                        weights=rv["_w"]
-                    ))
-
-            elif meta["rtype"] == "text":
-                # Text: prefer review, fall back to latest snapshot
-                review_text = raw_vals[raw_vals["submission_type_derived"] == SUBMISSION_TYPE_REVIEW][code]
-                review_text = review_text[review_text.notna() & (review_text.astype(str).str.strip() != "")]
-                if not review_text.empty:
-                    row[code] = str(review_text.iloc[-1])
-                else:
-                    snap_text = raw_vals[raw_vals["submission_type_derived"] == SUBMISSION_TYPE_SNAPSHOT][code]
-                    snap_text = snap_text[snap_text.notna() & (snap_text.astype(str).str.strip() != "")]
-                    row[code] = str(snap_text.iloc[-1]) if not snap_text.empty else ""
-
-        # Track the latest submitted_at for this day
-        row["submitted_at"] = group["submitted_at"].max()
-
-        # Has a review?
-        row["has_review"]   = row["n_reviews"] > 0
-        row["has_snapshot"] = row["n_snapshots"] > 0
-
-        agg_rows.append(row)
-
-    if not agg_rows:
+    scored = _score_submissions(wide, weights)
+    snapshots = scored[scored["form_type"] == FORM_SNAPSHOT].copy()
+    if snapshots.empty:
         return pd.DataFrame()
 
-    daily = pd.DataFrame(agg_rows).sort_values("date").reset_index(drop=True)
+    score_cols = [f"{d} Score %" for d in DOMAINS] + ["Overall Score %", "meta_multiplier"]
+    available  = [c for c in score_cols if c in snapshots.columns]
 
-    # Delta and rolling average on final scores
+    agg = (
+        snapshots.groupby("submitted_date")[available]
+        .mean()
+        .reset_index()
+        .rename(columns={"submitted_date": "date"})
+    )
+    agg["n_snapshots"] = (
+        snapshots.groupby("submitted_date").size().values
+    )
+
     for col in [f"{d} Score %" for d in DOMAINS] + ["Overall Score %"]:
-        if col in daily.columns:
-            daily[f"{col} Delta"] = daily[col].diff()
-            daily[f"{col} 7d Avg"] = daily[col].rolling(7, min_periods=1).mean()
+        if col in agg.columns:
+            agg[f"{col} Delta"]  = agg[col].diff()
+            agg[f"{col} 7d Avg"] = agg[col].rolling(7, min_periods=1).mean()
 
-    return daily
+    return agg.sort_values("date").reset_index(drop=True)
+
+def build_review_model(wide: pd.DataFrame, weights: dict) -> pd.DataFrame:
+    """
+    One row per calendar day: the review submission attributed to that day.
+    'Review of today' → attributed to submitted_date.
+    'Review of yesterday' → attributed to submitted_date - 1.
+    If multiple reviews exist for the same attributed day, take the latest.
+    Days with no review are excluded.
+    """
+    if wide.empty:
+        return pd.DataFrame()
+
+    scored = _score_submissions(wide, weights)
+    reviews = scored[scored["form_type"].isin([FORM_REVIEW_TODAY, FORM_REVIEW_YESTERDAY])].copy()
+    if reviews.empty:
+        return pd.DataFrame()
+
+    # Take the latest review per attributed day
+    reviews = (
+        reviews.sort_values("submitted_at")
+        .groupby("review_date")
+        .last()
+        .reset_index()
+        .rename(columns={"review_date": "date"})
+    )
+
+    for col in [f"{d} Score %" for d in DOMAINS] + ["Overall Score %"]:
+        if col in reviews.columns:
+            reviews[f"{col} Delta"]  = reviews[col].diff()
+            reviews[f"{col} 7d Avg"] = reviews[col].rolling(7, min_periods=1).mean()
+
+    return reviews.sort_values("date").reset_index(drop=True)
+
+def build_model_comparison(snapshot_model: pd.DataFrame,
+                           review_model: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each day with both a snapshot mean and a review, compute:
+      review_score - snapshot_mean_score per domain.
+
+    Positive = review rated the day worse than snapshots suggested.
+    Negative = review rated the day better than snapshots suggested.
+
+    Also computes an 'agreement' flag: True when the difference is < 10pp
+    across all domains (review and snapshots broadly agree).
+    """
+    if snapshot_model.empty or review_model.empty:
+        return pd.DataFrame()
+
+    snap_cols   = {f"{d} Score %": f"{d} Snapshot Avg %" for d in DOMAINS}
+    review_cols = {f"{d} Score %": f"{d} Review %"       for d in DOMAINS}
+
+    snap  = snapshot_model[["date"] + list(snap_cols.keys())].rename(columns=snap_cols)
+    rev   = review_model[  ["date"] + list(review_cols.keys())].rename(columns=review_cols)
+
+    merged = snap.merge(rev, on="date", how="inner")
+    if merged.empty:
+        return pd.DataFrame()
+
+    for d in DOMAINS:
+        snap_col   = f"{d} Snapshot Avg %"
+        review_col = f"{d} Review %"
+        merged[f"{d} Difference (Review−Snapshot)"] = (
+            merged[review_col] - merged[snap_col]
+        ).round(1)
+
+    diff_cols = [f"{d} Difference (Review−Snapshot)" for d in DOMAINS]
+    merged["max_abs_difference"] = merged[diff_cols].abs().max(axis=1)
+    merged["agreement"]          = merged["max_abs_difference"] < 10.0
+
+    return merged.sort_values("date").reset_index(drop=True)
+
+def build_daily_aggregate(wide: pd.DataFrame, weights: dict[str, float]) -> pd.DataFrame:
+    """
+    Legacy wrapper — returns snapshot model for backward compatibility
+    with anything that still calls build_daily_aggregate.
+    Use build_snapshot_model / build_review_model / build_model_comparison directly.
+    """
+    return build_snapshot_model(wide, weights)
 # Returns normalised per-item contribution for a single snapshot row
 # ──────────────────────────────────────────────────────────
 def get_snapshot_components(row: pd.Series, domain: str, weights: dict[str, float]) -> pd.DataFrame:
@@ -2416,19 +2468,22 @@ bands        = bl_config["bands"]
 mv_threshold = bl_config["movement_threshold"]
 pb_window    = bl_config["personal_baseline_window"]
 
-raw_df       = load_sheet(NEW_FORM_TAB)
-indexed_df   = add_submission_indexing(raw_df)
-wide_df      = clean_and_widen(indexed_df)
-snapshots_df = build_scored_table(wide_df, weights, daily_only=False)
-daily_df     = build_daily_aggregate(wide_df, weights)
-warnings_df  = build_warnings(daily_df, snapshots_df, bands, mv_threshold)
-episodes_df  = load_episodes()
-personal_bl  = compute_personal_baseline(daily_df, bands, pb_window, episodes=episodes_df)
-notes_df     = build_notes_df(wide_df, daily_df, bands)
-med_notes_df = build_med_notes_df(wide_df, daily_df)
-med_log_df   = load_med_log()
-cycle_log_df = load_cycle_log()
-comments_df  = load_comments()
+raw_df         = load_sheet(NEW_FORM_TAB)
+indexed_df     = add_submission_indexing(raw_df)
+wide_df        = clean_and_widen(indexed_df)
+snapshots_df   = build_scored_table(wide_df, weights, daily_only=False)
+snapshot_model_df = build_snapshot_model(wide_df, weights)
+review_model_df   = build_review_model(wide_df, weights)
+comparison_df     = build_model_comparison(snapshot_model_df, review_model_df)
+daily_df          = snapshot_model_df   # daily_df = snapshot model for all existing code
+warnings_df    = build_warnings(daily_df, snapshots_df, bands, mv_threshold)
+episodes_df    = load_episodes()
+personal_bl    = compute_personal_baseline(daily_df, bands, pb_window, episodes=episodes_df)
+notes_df       = build_notes_df(wide_df, daily_df, bands)
+med_notes_df   = build_med_notes_df(wide_df, daily_df)
+med_log_df     = load_med_log()
+cycle_log_df   = load_cycle_log()
+comments_df    = load_comments()
 
 # ──────────────────────────────────────────────────────────
 # GLOBAL FILTERS (sidebar)
@@ -2627,7 +2682,7 @@ with tab_overview:
                         hovertemplate=f"{d} 7d avg: %{{y:.1f}}%<extra></extra>",
                     ))
         # Smartwatch overlays
-        watch_data = get_watch_series(daily_filtered)
+        watch_data = get_watch_series(daily_filtered, wide=wide_df)
         if not watch_data.empty:
             watch_dates = watch_data["date"].astype(str).tolist()
             if show_sleep_score and not watch_data["sleep_score"].dropna().empty:
@@ -2997,7 +3052,7 @@ with tab_analysis:
 
         st.divider()
         st.markdown("### Smartwatch score analysis")
-        watch_df = get_watch_series(daily_filtered)
+        watch_df = get_watch_series(daily_filtered, wide=wide_df)
         if watch_df.empty or (watch_df["sleep_score"].dropna().empty and watch_df["energy_score"].dropna().empty):
             st.info("No smartwatch data in the selected date range.")
         else:
@@ -3047,7 +3102,7 @@ with tab_analysis:
                 "Values near -1 mean high watch score → low domain score (good). "
                 "Near 0 means no relationship. Near +1 means high watch score → high domain score (unusual for sleep/energy)."
             )
-            corr_df = compute_watch_correlations(daily_filtered)
+            corr_df = compute_watch_correlations(daily_filtered, wide=wide_df)
             if corr_df.empty:
                 st.info("Need at least 4 days of overlapping data for correlation.")
             else:
@@ -3980,13 +4035,164 @@ with tab_questions:
 
 # ── DAILY MODEL ───────────────────────────────────────────
 with tab_daily:
-    st.markdown("### Daily model — first submission per day")
-    st.dataframe(daily_filtered, use_container_width=True)
-    if not daily_filtered.empty:
-        delta_cols = [c for c in daily_filtered.columns if c.endswith(" Delta") and "Score" in c]
-        if delta_cols:
-            st.markdown("### Day-on-day deltas")
-            st.dataframe(daily_filtered[["date"] + delta_cols], use_container_width=True)
+    st.markdown("## Daily Models")
+    st.caption(
+        "Three separate models, each answering a different question about each day."
+    )
+
+    model_tab_snap, model_tab_review, model_tab_compare = st.tabs([
+        "Snapshot Average", "Review", "Comparison"
+    ])
+
+    with model_tab_snap:
+        st.markdown("### Snapshot model")
+        st.caption(
+            "Mean of all **Snapshot** submissions for each day. "
+            "Captures how the day felt in real time, averaged across however many "
+            "check-ins you did. More snapshots = more reliable average."
+        )
+        snap_filtered = _apply_date_filter(snapshot_model_df) if not snapshot_model_df.empty else snapshot_model_df
+        if snap_filtered.empty:
+            st.info("No snapshot data in the selected date range.")
+        else:
+            # Chart
+            fig_snap = go.Figure()
+            for d in selected_domains:
+                col = f"{d} Score %"
+                if col not in snap_filtered.columns:
+                    continue
+                fig_snap.add_trace(go.Scatter(
+                    x=snap_filtered["date"].astype(str).tolist(),
+                    y=snap_filtered[col].tolist(),
+                    mode="lines+markers", name=d,
+                    line=dict(color=DOMAIN_COLOURS.get(d,"#888"), width=2),
+                    hovertemplate=f"{d}: %{{y:.1f}}%<extra></extra>",
+                ))
+            fig_snap.update_layout(
+                height=chart_height, margin=dict(l=10,r=10,t=10,b=10),
+                yaxis=dict(range=[0,100], title="Score %", ticksuffix="%"),
+                xaxis=dict(title=None),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                plot_bgcolor="white", paper_bgcolor="white",
+            )
+            st.plotly_chart(fig_snap, use_container_width=True)
+
+            # Submission count context
+            if "n_snapshots" in snap_filtered.columns:
+                st.caption("Number of snapshots per day (more = more reliable average):")
+                st.bar_chart(snap_filtered.set_index("date")["n_snapshots"])
+
+            with st.expander("Raw table"):
+                st.dataframe(snap_filtered, use_container_width=True)
+
+    with model_tab_review:
+        st.markdown("### Review model")
+        st.caption(
+            "Your retrospective **Review** submission for each day — either "
+            "'Review of today (evening)' attributed to that day, or "
+            "'Review of yesterday' attributed to the previous day. "
+            "This is your considered overall judgment of how a day went."
+        )
+        rev_filtered = _apply_date_filter(review_model_df) if not review_model_df.empty else review_model_df
+        if rev_filtered.empty:
+            st.info("No review data in the selected date range.")
+        else:
+            fig_rev = go.Figure()
+            for d in selected_domains:
+                col = f"{d} Score %"
+                if col not in rev_filtered.columns:
+                    continue
+                fig_rev.add_trace(go.Scatter(
+                    x=rev_filtered["date"].astype(str).tolist(),
+                    y=rev_filtered[col].tolist(),
+                    mode="lines+markers", name=d,
+                    line=dict(color=DOMAIN_COLOURS.get(d,"#888"), width=2),
+                    hovertemplate=f"{d}: %{{y:.1f}}%<extra></extra>",
+                ))
+            fig_rev.update_layout(
+                height=chart_height, margin=dict(l=10,r=10,t=10,b=10),
+                yaxis=dict(range=[0,100], title="Score %", ticksuffix="%"),
+                xaxis=dict(title=None),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                plot_bgcolor="white", paper_bgcolor="white",
+            )
+            st.plotly_chart(fig_rev, use_container_width=True)
+
+            with st.expander("Raw table"):
+                st.dataframe(rev_filtered, use_container_width=True)
+
+    with model_tab_compare:
+        st.markdown("### Snapshot vs review comparison")
+        st.caption(
+            "For each day with both a snapshot average and a review, this shows the "
+            "difference: **Review − Snapshot average**. "
+            "Positive = you rated the day worse in retrospect than it felt at the time. "
+            "Negative = you rated the day better in retrospect than it felt at the time. "
+            "A consistent pattern in either direction is clinically meaningful."
+        )
+        comp_filtered = _apply_date_filter(comparison_df) if not comparison_df.empty else comparison_df
+        if comp_filtered.empty:
+            st.info("Not enough data yet — need days with both snapshots and a review.")
+        else:
+            # Difference chart per domain
+            diff_cols = [f"{d} Difference (Review−Snapshot)" for d in DOMAINS
+                         if f"{d} Difference (Review−Snapshot)" in comp_filtered.columns]
+            if diff_cols:
+                fig_comp = go.Figure()
+                for col in diff_cols:
+                    domain = col.split(" ")[0]
+                    fig_comp.add_trace(go.Bar(
+                        x=comp_filtered["date"].astype(str).tolist(),
+                        y=comp_filtered[col].tolist(),
+                        name=domain,
+                        marker_color=DOMAIN_COLOURS.get(domain, "#888"),
+                        hovertemplate=f"{domain}: %{{y:+.1f}}pp<extra></extra>",
+                    ))
+                fig_comp.add_hline(y=0, line_color="rgba(0,0,0,0.3)", line_width=1)
+                fig_comp.update_layout(
+                    height=chart_height,
+                    barmode="group",
+                    margin=dict(l=10,r=10,t=10,b=10),
+                    yaxis=dict(title="Difference (pp)", zeroline=True),
+                    xaxis=dict(title=None),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    plot_bgcolor="white", paper_bgcolor="white",
+                )
+                st.plotly_chart(fig_comp, use_container_width=True)
+
+            # Summary statistics
+            st.markdown("### Summary")
+            summary_rows = []
+            for d in DOMAINS:
+                diff_col = f"{d} Difference (Review−Snapshot)"
+                if diff_col not in comp_filtered.columns:
+                    continue
+                vals = comp_filtered[diff_col].dropna()
+                if vals.empty:
+                    continue
+                mean_diff = vals.mean()
+                direction = (
+                    "Reviews consistently worse than snapshots" if mean_diff > 5
+                    else "Reviews consistently better than snapshots" if mean_diff < -5
+                    else "Reviews and snapshots broadly agree"
+                )
+                summary_rows.append({
+                    "Domain": d,
+                    "Mean difference (pp)": round(mean_diff, 1),
+                    "Max difference (pp)": round(vals.abs().max(), 1),
+                    "Days compared": len(vals),
+                    "Pattern": direction,
+                })
+            if summary_rows:
+                st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+            if "agreement" in comp_filtered.columns:
+                agree_pct = comp_filtered["agreement"].mean() * 100
+                st.metric("Days where review and snapshots agree (< 10pp difference)",
+                          f"{agree_pct:.0f}%")
+
+            with st.expander("Raw comparison table"):
+                st.dataframe(comp_filtered, use_container_width=True)
 
 # ── DATA LAYER ────────────────────────────────────────────
 with tab_data:
