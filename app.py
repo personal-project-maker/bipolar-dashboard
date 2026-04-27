@@ -1913,54 +1913,29 @@ def generate_clinician_report(
         latest = daily.sort_values("date").iloc[-1]
         mult   = float(latest.get("meta_multiplier", 1.0) or 1.0)
         lines.append(f"**Latest entry:** {latest['date']}  ")
-        lines.append(f"**Submissions that day:** {int(latest.get('n_total',1))} "
-                     f"({int(latest.get('n_snapshots',0))} snapshot, {int(latest.get('n_reviews',0))} review)")
         lines.append(f"**Meta force multiplier:** ×{mult:.2f}" +
                      (" ⚡ active" if mult > 1.05 else " (baseline)"))
         lines.append("")
 
-        # For the latest date, show snapshot aggregate vs review scores separately
-        latest_date = latest["date"]
-        day_wide = wide[wide["submitted_date"] == latest_date] if not wide.empty else pd.DataFrame()
-        snap_rows   = day_wide[day_wide["submission_type_derived"] == SUBMISSION_TYPE_SNAPSHOT] if not day_wide.empty else pd.DataFrame()
-        review_rows = day_wide[day_wide["submission_type_derived"] == SUBMISSION_TYPE_REVIEW]   if not day_wide.empty else pd.DataFrame()
-
-        lines.append("| Domain | Aggregate | Snapshot avg | Review avg | Band | vs Baseline |")
-        lines.append("|--------|-----------|-------------|------------|------|-------------|")
+        lines.append("| Domain | Score | Band | vs Personal Baseline |")
+        lines.append("|--------|-------|------|----------------------|")
         for d in DOMAINS:
             score = float(latest.get(f"{d} Score %", 0) or 0)
             band  = classify_score(score, d, bands)
             pb    = personal_bl.get(d, {})
             vs_bl = (f"{score - pb['mean']:+.1f}pp"
                      if pb.get("reliable") and pb.get("mean") is not None else "—")
-            # Snapshot average for this domain
-            snap_avg = "—"
-            rev_avg  = "—"
-            if not snap_rows.empty:
-                # Score each snapshot row and average
-                snap_scored = build_scored_table(snap_rows.assign(
-                    is_first_of_day=True, submission_order_in_day=1
-                ), weights, daily_only=False)
-                if not snap_scored.empty and f"{d} Score %" in snap_scored.columns:
-                    snap_avg = f"{snap_scored[f'{d} Score %'].mean():.1f}%"
-            if not review_rows.empty:
-                rev_scored = build_scored_table(review_rows.assign(
-                    is_first_of_day=True, submission_order_in_day=1
-                ), weights, daily_only=False)
-                if not rev_scored.empty and f"{d} Score %" in rev_scored.columns:
-                    rev_avg = f"{rev_scored[f'{d} Score %'].mean():.1f}%"
-            lines.append(f"| {d} | {score:.1f}% | {snap_avg} | {rev_avg} | {band.upper()} | {vs_bl} |")
+            lines.append(f"| {d} | {score:.1f}% | {band.upper()} | {vs_bl} |")
     else:
         lines.append("*No daily data available.*")
     lines.append("")
 
     # ── Recent trends ───────────────────────────────────────
-    lines.append("## Domain Trends (last 30 days)")
-    lines.append("*(Based on snapshot average — real-time data)*")
+    lines.append(f"## Domain Trends (last {window_days} days)")
     period = daily[daily["date"] >= window_start] if not daily.empty else daily
     if not period.empty:
-        lines.append("| Domain | Mean % | Peak % | Days in Well | Days in Watch+ | Days in Warning+ |")
-        lines.append("|--------|--------|--------|-------------|----------------|-----------------|")
+        lines.append("| Domain | Mean % | Peak % | Days in Well | Days in Caution+ | Days in Warning+ |")
+        lines.append("|--------|--------|--------|-------------|-----------------|-----------------|")
         for d in DOMAINS:
             col = f"{d} Score %"
             if col not in period.columns:
@@ -1969,65 +1944,12 @@ def generate_clinician_report(
             mean_s    = scores.mean()
             peak_s    = scores.max()
             n_well    = int((scores.apply(lambda s: classify_score(s, d, bands) == "well")).sum())
-            n_watch   = int((scores.apply(lambda s: classify_score(s, d, bands) in ["watch","caution","warning","critical"])).sum())
+            n_caution = int((scores.apply(lambda s: classify_score(s, d, bands) in ["caution","warning","critical"])).sum())
             n_warning = int((scores.apply(lambda s: classify_score(s, d, bands) in ["warning","critical"])).sum())
-            lines.append(f"| {d} | {mean_s:.1f}% | {peak_s:.1f}% | {n_well} | {n_watch} | {n_warning} |")
+            lines.append(f"| {d} | {mean_s:.1f}% | {peak_s:.1f}% | {n_well} | {n_caution} | {n_warning} |")
     else:
-        lines.append("*No snapshot data in this period.*")
+        lines.append("*No data in this period.*")
     lines.append("")
-
-    # ── Review model ────────────────────────────────────────
-    lines.append("## Retrospective Review Scores (last 30 days)")
-    lines.append("*(Based on 'Review of today/yesterday' submissions — considered daily judgment)*")
-    if review_model is not None and not review_model.empty:
-        rev_period = review_model[review_model["date"] >= window_start]
-        if not rev_period.empty:
-            lines.append("| Domain | Mean % | Peak % |")
-            lines.append("|--------|--------|--------|")
-            for d in DOMAINS:
-                col = f"{d} Score %"
-                if col not in rev_period.columns:
-                    continue
-                scores = rev_period[col].dropna()
-                if scores.empty:
-                    continue
-                lines.append(f"| {d} | {scores.mean():.1f}% | {scores.max():.1f}% |")
-            lines.append(f"\n*Based on {len(rev_period)} review submissions.*")
-        else:
-            lines.append("*No reviews in this period.*")
-    else:
-        lines.append("*No review data available.*")
-    lines.append("")
-
-    # ── Review vs snapshot comparison ───────────────────────
-    if comparison is not None and not comparison.empty:
-        comp_period = comparison[comparison["date"] >= window_start]
-        if not comp_period.empty:
-            lines.append("## Review vs Snapshot Comparison")
-            lines.append(
-                "Positive values = review rated the day worse than snapshots suggested. "
-                "Negative = review rated better. A consistent direction is clinically meaningful."
-            )
-            lines.append("| Domain | Mean difference (pp) | Pattern |")
-            lines.append("|--------|---------------------|---------|")
-            for d in DOMAINS:
-                diff_col = f"{d} Difference (Review−Snapshot)"
-                if diff_col not in comp_period.columns:
-                    continue
-                vals = comp_period[diff_col].dropna()
-                if vals.empty:
-                    continue
-                mean_d = vals.mean()
-                pattern = (
-                    "Reviews consistently worse than real-time" if mean_d > 5
-                    else "Reviews consistently better than real-time" if mean_d < -5
-                    else "Broadly agree"
-                )
-                lines.append(f"| {d} | {mean_d:+.1f}pp | {pattern} |")
-            if "agreement" in comp_period.columns:
-                agree_pct = comp_period["agreement"].mean() * 100
-                lines.append(f"\n*Agreement rate (< 10pp difference): {agree_pct:.0f}% of compared days.*")
-            lines.append("")
 
     # ── Personal baseline ───────────────────────────────────
     lines.append("## Personal Baseline")
@@ -3820,15 +3742,59 @@ with tab_cycle:
 with tab_export:
     st.markdown("## Clinician Export")
     st.caption(
-        "A structured summary covering the last 30 days, designed to support "
-        "clinical appointments. Copy the text below or save it manually."
+        "A structured summary designed to support clinical appointments. "
+        "Change the day range below, then copy the text to share with your team."
     )
 
     exp_col1, exp_col2 = st.columns([2, 1])
     with exp_col1:
-        export_window = st.slider("Days to cover", 7, 90, 30, 7, key="export_window")
-    with exp_col2:
-        st.markdown("&nbsp;")  # spacer
+        export_window = st.slider("Days to cover", 7, 90, 7, 7, key="export_window")
+
+    # Overview chart for the export period
+    import datetime as _exp_chart_dt
+    exp_start = _exp_chart_dt.date.today() - _exp_chart_dt.timedelta(days=export_window)
+    exp_daily = daily_df[daily_df["date"] >= exp_start] if not daily_df.empty else daily_df
+
+    if not exp_daily.empty:
+        st.markdown(f"### Domain scores — last {export_window} days")
+        fig_exp = go.Figure()
+        for d in DOMAINS:
+            col = f"{d} Score %"
+            if col not in exp_daily.columns:
+                continue
+            fig_exp.add_trace(go.Scatter(
+                x=exp_daily["date"].astype(str).tolist(),
+                y=exp_daily[col].tolist(),
+                mode="lines+markers", name=d,
+                line=dict(color=DOMAIN_COLOURS.get(d, "#888"), width=2),
+                marker=dict(size=5),
+                hovertemplate=f"{d}: %{{y:.1f}}%<extra></extra>",
+            ))
+        # Well band ceilings
+        for d in DOMAINS:
+            b = bands.get(d, DEFAULT_BASELINE_BANDS.get(d, {}))
+            fig_exp.add_hline(
+                y=b.get("well", 20), line_dash="dot",
+                line_color="rgba(52,199,89,0.4)", line_width=1,
+            )
+        # Episode and medication overlays
+        fig_exp = add_episode_overlays(fig_exp, episodes_df)
+        if not med_log_df.empty:
+            exp_med = med_log_df[med_log_df["date"] >= exp_start]
+            fig_exp = add_med_log_overlays(fig_exp, exp_med)
+        fig_exp.update_layout(
+            height=340,
+            margin=dict(l=10, r=10, t=10, b=10),
+            yaxis=dict(range=[0, 100], title="Score %", ticksuffix="%"),
+            xaxis=dict(title=None),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            plot_bgcolor="white", paper_bgcolor="white",
+        )
+        st.plotly_chart(fig_exp, use_container_width=True)
+        st.caption(
+            "Dotted green lines = Well band ceiling for each domain. "
+            "This chart is for your reference — copy it as a screenshot to share with your clinician."
+        )
 
     report = generate_clinician_report(
         daily=daily_df,
@@ -3842,8 +3808,8 @@ with tab_export:
         comments=comments_df,
         med_log=med_log_df,
         cycle_log=cycle_log_df,
-        review_model=review_model_df,
-        comparison=comparison_df,
+        review_model=None,
+        comparison=None,
         window_days=export_window,
     )
 
