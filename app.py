@@ -2763,19 +2763,17 @@ with tab_overview:
                 st.caption("💊 Vertical dashed lines on the chart above mark days with medication notes.")
 
         st.markdown("### Per-domain charts")
-        c1, c2 = st.columns(2)
-        for i, domain in enumerate(filtered_domains):
-            with (c1 if i % 2 == 0 else c2):
-                st.plotly_chart(
-                    make_band_chart(daily_filtered, domain, bands,
-                                    personal=personal_bl,
-                                    movement_threshold=mv_threshold,
-                                    show_rolling=show_rolling,
-                                    episodes=episodes_df,
-                                    med_notes=med_notes_df,
-                                    height=chart_height),
-                    use_container_width=True,
-                )
+        for domain in filtered_domains:
+            st.plotly_chart(
+                make_band_chart(daily_filtered, domain, bands,
+                                personal=personal_bl,
+                                movement_threshold=mv_threshold,
+                                show_rolling=show_rolling,
+                                episodes=episodes_df,
+                                med_notes=med_notes_df,
+                                height=chart_height),
+                use_container_width=True,
+            )
 
 # ── SNAPSHOTS ─────────────────────────────────────────────
 with tab_snapshots_tab:
@@ -3190,7 +3188,7 @@ with tab_analysis:
                         return "background-color: rgba(255,59,48,0.15)"  # positive = worth noting
                     return ""
 
-                styled = corr_df.style.applymap(
+                styled = corr_df.style.map(
                     _colour_r, subset=["same_day_r", "lagged_r_1d"]
                 ).format({"same_day_r": "{:.3f}", "lagged_r_1d": "{:.3f}"}, na_rep="—")
                 st.dataframe(styled, use_container_width=True, hide_index=True)
