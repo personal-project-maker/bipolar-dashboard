@@ -2629,32 +2629,42 @@ with tab_overview:
         primary   = warnings_df[~warnings_df["suppressed"]] if "suppressed" in warnings_df.columns else warnings_df
         suppressed = warnings_df[warnings_df["suppressed"]]  if "suppressed" in warnings_df.columns else pd.DataFrame()
 
-        if primary.empty:
+if primary.empty:
             st.success("No active primary alerts.")
         else:
             for _, w in primary.iterrows():
-                st.markdown(f"{sev_icon.get(w['severity'], 'ℹ️')} **{w['domain']}** ({w['source']}) — {w['message']}")
+                domain_colour = DOMAIN_COLOURS.get(w["domain"], "#888888")
+                st.markdown(
+                    f'{sev_icon.get(w["severity"], "ℹ️")} '
+                    f'<span style="color:{domain_colour};font-weight:bold">{w["domain"]}</span> '
+                    f'({w["source"]}) — {w["message"]}',
+                    unsafe_allow_html=True,
+                )
 
-        # Show suppressed Dep/Mania as context under a mixed warning
-        if not suppressed.empty:
-            mixed_active = (
-                not primary[primary["domain"] == "Mixed"].empty
-                if not primary.empty else False
-            )
-            if mixed_active:
-                suppressed_names = suppressed["domain"].unique().tolist()
+        # Show suppressed mood domains as context under the primary mood alert
+        if not suppressed.empty and not primary.empty:
+            # Identify which mood domain is the primary alert
+            mood_primary_rows = primary[primary["domain"].isin(["Depression", "Mania", "Mixed"])]
+            if not mood_primary_rows.empty:
+                primary_name = mood_primary_rows.iloc[0]["domain"]
                 context_parts = []
-                for d in suppressed_names:
+                for d in suppressed["domain"].unique():
                     rows_d = suppressed[suppressed["domain"] == d]
                     if not rows_d.empty:
                         score = rows_d.iloc[0]["score_pct"]
                         band  = rows_d.iloc[0]["band"]
-                        context_parts.append(f"{d}: {score:.1f}% ({band})")
+                        col   = DOMAIN_COLOURS.get(d, "#888888")
+                        context_parts.append(
+                            f'<span style="color:{col};font-weight:600">{d}</span>: {score:.1f}% ({band})'
+                        )
                 if context_parts:
-                    st.caption(
-                        f"ℹ️ Also elevated as expected Mixed components — "
-                        + ", ".join(context_parts)
-                        + ". Shown here for context; Mixed is the primary alert."
+                    primary_col = DOMAIN_COLOURS.get(primary_name, "#888888")
+                    st.markdown(
+                        f'ℹ️ Also elevated — ' + ", ".join(context_parts)
+                        + f'. Shown as context; '
+                        f'<span style="color:{primary_col};font-weight:600">{primary_name}</span> '
+                        f'is the primary alert (highest score).',
+                        unsafe_allow_html=True,
                     )
 
     if not daily_filtered.empty:
