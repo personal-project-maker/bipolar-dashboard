@@ -2631,7 +2631,7 @@ with tab_overview:
 
 if primary.empty:
             st.success("No active primary alerts.")
-        else:
+else:
             for _, w in primary.iterrows():
                 domain_colour = DOMAIN_COLOURS.get(w["domain"], "#888888")
                 st.markdown(
