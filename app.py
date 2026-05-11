@@ -86,14 +86,8 @@ def safe_worksheet(tab_name: str):
 # ──────────────────────────────────────────────────────────
 # JOURNAL COMMENTS
 # ──────────────────────────────────────────────────────────
-# Stored in a Google Sheet tab with columns:
-#   submission_id | commented_at | comment_text
-# submission_id matches the wide table so comments are tied
-# to a specific submission, not just a date.
-
 @st.cache_data(ttl=30)
 def load_comments() -> pd.DataFrame:
-    """Load all journal comments from the Comments sheet tab."""
     ws = safe_worksheet(COMMENTS_TAB)
     if ws is None:
         return pd.DataFrame(columns=["submission_id", "commented_at", "comment_text"])
@@ -102,20 +96,17 @@ def load_comments() -> pd.DataFrame:
         return pd.DataFrame(columns=["submission_id", "commented_at", "comment_text"])
     headers = [str(h).strip() for h in values[0]]
     df = pd.DataFrame(values[1:], columns=headers)
-    # Keep only rows with actual comment text
     df = df[df["comment_text"].astype(str).str.strip() != ""].copy()
     return df.reset_index(drop=True)
 
 
 def save_comment(submission_id: str, comment_text: str) -> tuple[bool, str]:
-    """Append a single comment row to the Comments sheet tab."""
     ws = safe_worksheet(COMMENTS_TAB)
     if ws is None:
         return False, (
             f"Worksheet '{COMMENTS_TAB}' not found. Create a tab with that exact name "
             "in your Google Sheet, then comments will save correctly."
         )
-    # Initialise headers if sheet is empty
     existing = ws.get_all_values()
     if not existing:
         ws.append_row(["submission_id", "commented_at", "comment_text"])
@@ -128,12 +119,10 @@ def save_comment(submission_id: str, comment_text: str) -> tuple[bool, str]:
 
 
 def get_comments_for_submission(submission_id: str, comments_df: pd.DataFrame) -> list[dict]:
-    """Return all comments for a given submission_id, oldest first."""
     if not submission_id or submission_id.strip() == "":
         return []
     if comments_df.empty or "submission_id" not in comments_df.columns:
         return []
-    # Ensure we only match non-empty IDs exactly
     rows = comments_df[
         (comments_df["submission_id"].astype(str).str.strip() == submission_id.strip()) &
         (comments_df["submission_id"].astype(str).str.strip() != "")
@@ -212,21 +201,16 @@ QUESTION_CATALOG: list[dict[str, Any]] = [
     # FUNCTIONING
     dict(code="func_work",              text="How effectively have I been functioning at work?",                      group="functioning",rtype="scale_1_5", polarity="higher_better", domains=["Depression","Mania"],       order=220),
     dict(code="func_daily",             text="How well have I been functioning in my daily life?",                    group="functioning",rtype="scale_1_5", polarity="higher_better", domains=["Depression","Mania"],       order=230),
-    # Sleep: included in Mania + Mixed at full weight; deprioritised in Depression via domain_weight_overrides
     dict(code="func_sleep_hours",       text="How many hours did I sleep last night?",                                group="functioning",rtype="numeric",   polarity="custom_sleep",  domains=["Depression","Mania","Mixed"], order=450, score_in_snapshot=False),
     dict(code="func_sleep_quality",     text="How poor was my sleep quality last night",                              group="functioning",rtype="scale_1_5", polarity="higher_worse",  domains=["Depression","Mania","Mixed"], order=460, score_in_snapshot=False),
-    # META
-    # FORCE MULTIPLIERS — amplify all domain scores post-calculation
-    # meta_role="force_multiplier" flags these for the multiplier pipeline
+    # META — FORCE MULTIPLIERS
     dict(code="meta_unlike_self",             text="Do I feel unlike my usual self?",                                 group="meta", rtype="scale_1_5", polarity="higher_worse", domains=[], order=240, meta_role="force_multiplier"),
     dict(code="meta_intensifying",            text="Is my state intensifying (in any direction)?",                    group="meta", rtype="scale_1_5", polarity="higher_worse", domains=[], order=300, meta_role="force_multiplier"),
     dict(code="meta_towards_episode",         text="Do I feel like I'm moving towards an episode?",                   group="meta", rtype="scale_1_5", polarity="higher_worse", domains=[], order=310, meta_role="force_multiplier"),
-    # INSIGHT ITEMS — contribute normally to Dep/Mania/Mixed; INVERSE to Psychosis
-    # (low concern/insight in psychosis = higher risk, not lower)
-    # meta_role="insight_inverse_psychosis" flags these for domain-specific polarity flip
+    # META — INSIGHT ITEMS
     dict(code="meta_something_wrong",         text="Do I think something may be wrong or changing?",                  group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Depression","Mania","Mixed","Psychosis"], order=250, meta_role="insight_inverse_psychosis"),
     dict(code="meta_concerned",               text="Am I concerned about my current state?",                           group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Depression","Mania","Mixed","Psychosis"], order=260, meta_role="insight_inverse_psychosis"),
-    # DIRECT CONTRIBUTORS — added to specific domains at face value
+    # META — DIRECT CONTRIBUTORS
     dict(code="meta_disorganised_thoughts",   text="Do my thoughts feel disorganised or hard to follow?",              group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Psychosis","Mixed"],             order=270, meta_role="contributor"),
     dict(code="meta_attention_unstable",      text="Is my attention unstable or jumping?",                             group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Mania","Mixed"],                 order=280, meta_role="contributor"),
     dict(code="meta_driven_without_thinking", text="Do I feel driven to act without thinking?",                        group="meta", rtype="scale_1_5", polarity="higher_worse", domains=["Mania","Mixed"],                 order=290, meta_role="contributor"),
@@ -249,7 +233,7 @@ QUESTION_CATALOG: list[dict[str, Any]] = [
     dict(code="experience_description", text="How would I describe my experiences?",                    group="notes", rtype="text",    polarity="not_applicable", domains=[], order=470),
     dict(code="medication_notes",       text="Have there been any medication changes? If so, what?",    group="notes", rtype="text",    polarity="not_applicable", domains=[], order=480),
     dict(code="submission_type",        text="What kind of entry is this?",                             group="notes", rtype="text",    polarity="not_applicable", domains=[], order=5),
-    # SMARTWATCH — external continuous metrics, not scored, display and correlation only
+    # SMARTWATCH
     dict(code="watch_sleep_score",      text="What was my sleep score last night?",                     group="smartwatch", rtype="numeric", polarity="higher_better", domains=[], order=490, score_in_snapshot=False, score_in_daily=False),
     dict(code="watch_energy_score",     text="What was my energy score today?",                         group="smartwatch", rtype="numeric", polarity="higher_better", domains=[], order=491, score_in_snapshot=False, score_in_daily=False),
 ]
@@ -262,18 +246,14 @@ DOMAINS = ["Depression", "Mania", "Psychosis", "Mixed"]
 
 # ──────────────────────────────────────────────────────────
 # DOMAIN-SPECIFIC WEIGHT OVERRIDES
-# Sleep is deprioritised in Depression (where it's a symptom, not a cause)
-# but kept at full weight in Mania and Mixed (where it's a major driver).
-# Format: {domain: {question_code: multiplier}}
-# Multiplier is applied to the base weight for that domain only.
 # ──────────────────────────────────────────────────────────
 DOMAIN_WEIGHT_MULTIPLIERS: dict[str, dict[str, float]] = {
     "Depression": {
-        "func_sleep_hours":   0.35,   # sleep hrs has low predictive value for dep onset
-        "func_sleep_quality": 0.45,   # sleep quality similarly deprioritised
+        "func_sleep_hours":   0.35,
+        "func_sleep_quality": 0.45,
     },
     "Mania": {
-        "func_sleep_hours":   1.0,    # full weight — sleep loss is a core mania driver
+        "func_sleep_hours":   1.0,
         "func_sleep_quality": 1.0,
     },
     "Mixed": {
@@ -301,12 +281,11 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "flag_physiological_stress": 1.0, "flag_psychological_stress": 1.0,
     "obs_up_now": 1.0, "obs_down_now": 1.0, "obs_mixed_now": 1.0,
     "obs_up_coming": 0.75, "obs_down_coming": 0.75, "obs_mixed_coming": 0.75,
-    # Meta contributors (force multipliers have no weight here — they act post-scoring)
-    "meta_something_wrong": 1.25,          # insight item — moderate weight in Dep/Mania/Mixed
-    "meta_concerned": 1.0,                 # insight item — lower weight, more reactive
-    "meta_disorganised_thoughts": 1.75,    # strong Psychosis/Mixed contributor
-    "meta_attention_unstable": 1.25,       # Mania/Mixed contributor
-    "meta_driven_without_thinking": 1.5,   # Mania/Mixed contributor — reinforces impulsivity
+    "meta_something_wrong": 1.25,
+    "meta_concerned": 1.0,
+    "meta_disorganised_thoughts": 1.75,
+    "meta_attention_unstable": 1.25,
+    "meta_driven_without_thinking": 1.5,
 }
 
 # ──────────────────────────────────────────────────────────
@@ -323,7 +302,6 @@ def _catalog_by_code() -> dict[str, dict]:
     return {q["code"]: q for q in QUESTION_CATALOG}
 
 def _effective_weight(code: str, domain: str, base_weights: dict[str, float]) -> float:
-    """Apply domain-specific multiplier to base weight."""
     base = base_weights.get(code, 0.0)
     multiplier = DOMAIN_WEIGHT_MULTIPLIERS.get(domain, {}).get(code, 1.0)
     return base * multiplier
@@ -335,17 +313,6 @@ WATCH_SLEEP_CODE  = "watch_sleep_score"
 WATCH_ENERGY_CODE = "watch_energy_score"
 
 def get_watch_series(daily: pd.DataFrame, wide: pd.DataFrame = None) -> pd.DataFrame:
-    """
-    Extract smartwatch sleep and energy scores.
-
-    Watch scores only appear in review entries, which may not be the
-    first submission of the day. So we pull from the full wide table
-    (all submissions) and take the last non-null value per day, then
-    merge onto the daily table by date.
-
-    Falls back to reading from daily directly if wide is not provided.
-    Both scores are 0-100 continuous numeric, higher = better.
-    """
     if daily.empty:
         return pd.DataFrame(columns=["date", "sleep_score", "energy_score"])
 
@@ -379,13 +346,6 @@ def get_watch_series(daily: pd.DataFrame, wide: pd.DataFrame = None) -> pd.DataF
 
 
 def compute_watch_correlations(daily: pd.DataFrame, wide: pd.DataFrame = None) -> pd.DataFrame:
-    """
-    Compute same-day and 1-day-lagged correlations between smartwatch scores
-    and domain scores.
-
-    Returns a DataFrame with columns:
-      metric | domain | same_day_r | lagged_r_1d | n
-    """
     watch = get_watch_series(daily, wide=wide)
     if watch.empty or len(watch) < 5:
         return pd.DataFrame()
@@ -407,7 +367,6 @@ def compute_watch_correlations(daily: pd.DataFrame, wide: pd.DataFrame = None) -
                 continue
             same_day_r = float(pair[metric_col].corr(pair[score_col]))
 
-            # 1-day lag: does yesterday's metric predict today's domain score?
             lagged = merged[[metric_col, score_col]].copy()
             lagged[f"{metric_col}_lag1"] = lagged[metric_col].shift(1)
             lagged_pair = lagged[[f"{metric_col}_lag1", score_col]].dropna()
@@ -426,89 +385,56 @@ def compute_watch_correlations(daily: pd.DataFrame, wide: pd.DataFrame = None) -
 # ──────────────────────────────────────────────────────────
 # META QUESTION ROLES
 # ──────────────────────────────────────────────────────────
-# Force multipliers: amplify all domain scores post-calculation.
-# Range: 1.0 (no amplification) to META_MULTIPLIER_MAX (full amplification).
-# The composite of the three items is mapped linearly into this range.
-META_MULTIPLIER_MAX: float = 1.35   # max 35% amplification at full score
+META_MULTIPLIER_MAX: float = 1.35
 
 FORCE_MULTIPLIER_CODES = [
     q["code"] for q in QUESTION_CATALOG if q.get("meta_role") == "force_multiplier"
 ]
 
-# Insight-inverse items: in Psychosis, LOW concern/insight = HIGHER risk.
-# In all other domains they contribute normally (higher score = worse).
 INSIGHT_INVERSE_CODES = [
     q["code"] for q in QUESTION_CATALOG if q.get("meta_role") == "insight_inverse_psychosis"
 ]
 
 def _normalise_meta_item(raw_value: Any) -> float:
-    """Normalise a single scale_1_5 meta item to 0–100."""
     v = pd.to_numeric(raw_value, errors="coerce")
     if pd.isna(v):
         return 0.0
     return float(min(max((v - 1.0) / 4.0 * 100.0, 0.0), 100.0))
 
 def compute_meta_multiplier(row: pd.Series) -> float:
-    """
-    Compute the force-multiplier scalar for one row (submission).
-
-    Takes the mean of the three multiplier items (meta_unlike_self,
-    meta_intensifying, meta_towards_episode), each normalised to 0–100,
-    then maps that average linearly to [1.0, META_MULTIPLIER_MAX].
-
-    Returns a scalar in [1.0, META_MULTIPLIER_MAX].
-    """
     scores = []
     for code in FORCE_MULTIPLIER_CODES:
         if code in row.index:
             scores.append(_normalise_meta_item(row[code]))
     if not scores:
         return 1.0
-    avg = float(np.mean(scores))  # 0–100
+    avg = float(np.mean(scores))
     return 1.0 + (avg / 100.0) * (META_MULTIPLIER_MAX - 1.0)
 
 def _psychosis_insight_score(row: pd.Series) -> float:
-    """
-    For Psychosis only: low concern/insight = higher risk.
-    Inverts the normalised insight item scores (100 - score),
-    then returns the mean as an additive contribution (0–100).
-    """
     scores = []
     for code in INSIGHT_INVERSE_CODES:
         if code in row.index:
             norm = _normalise_meta_item(row[code])
-            scores.append(100.0 - norm)   # invert: low concern → high score
+            scores.append(100.0 - norm)
     return float(np.mean(scores)) if scores else 0.0
 
 # ──────────────────────────────────────────────────────────
 # SUBMISSION TYPE
 # ──────────────────────────────────────────────────────────
-# Values from the form question "What kind of entry is this?"
-SUBMISSION_TYPE_REVIEW   = "review"    # covers both "Review of today" and "Review of yesterday"
+SUBMISSION_TYPE_REVIEW   = "review"
 SUBMISSION_TYPE_SNAPSHOT = "snapshot"
 
-# Weight applied to review submissions in the daily aggregate
-# Snapshots are 1.0 (ground truth); reviews are 0.5 (retrospective, subject to recall bias)
 REVIEW_WEIGHT   = 0.5
 SNAPSHOT_WEIGHT = 1.0
 
 def _classify_submission_type(row: pd.Series) -> str:
-    """
-    Classify a submission as 'review' or 'snapshot'.
-
-    Priority:
-    1. If the form field is filled, use it directly.
-    2. For historical data (no form field): if func_sleep_hours is present
-       and non-null, treat as review of yesterday; otherwise treat as snapshot.
-    """
-    # Check explicit form field first
     st_val = str(row.get("submission_type", "") or "").strip().lower()
     if "review" in st_val:
         return SUBMISSION_TYPE_REVIEW
     if "snapshot" in st_val:
         return SUBMISSION_TYPE_SNAPSHOT
 
-    # Historical heuristic: sleep hours present → review
     sleep = row.get("func_sleep_hours")
     if sleep is not None and not (isinstance(sleep, float) and np.isnan(sleep)):
         try:
@@ -556,7 +482,6 @@ def clean_and_widen(df: pd.DataFrame) -> pd.DataFrame:
         else:
             wide[code] = raw
 
-    # Derive a clean submission type column after all other columns are set
     wide["submission_type_derived"] = wide.apply(_classify_submission_type, axis=1)
     return wide
 
@@ -597,7 +522,6 @@ def _domain_score(frame: pd.DataFrame, domain: str, weights: dict[str, float],
     for c in codes:
         ew = _effective_weight(c, domain, weights)
         col_vals = frame[c].fillna(0.0)
-        # Insight-inverse items: flip in Psychosis (low concern = higher risk)
         if domain == "Psychosis" and c in INSIGHT_INVERSE_CODES:
             col_vals = 100.0 - col_vals
         num += col_vals * ew
@@ -616,7 +540,6 @@ def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
             - src.groupby("submitted_date")["submitted_at"].transform("min")
         ).dt.total_seconds() / 60.0
 
-    # Normalise all scoreable questions
     by_code = _catalog_by_code()
     for code, meta in by_code.items():
         if code in src.columns and meta["rtype"] != "text":
@@ -626,17 +549,13 @@ def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
         if f"_n_{code}" in norm_frame.columns:
             norm_frame[code] = norm_frame[f"_n_{code}"]
 
-    # Raw domain scores (pre-multiplier)
     for domain in DOMAINS:
         src[f"{domain} Score % (raw)"] = _domain_score(
             norm_frame, domain, weights, snapshot=not daily_only
         )
 
-    # Compute force multiplier per row from the three meta items
-    # We use the raw (un-normalised) meta columns from src for this
     src["meta_multiplier"] = src.apply(compute_meta_multiplier, axis=1)
 
-    # Apply multiplier and cap at 100
     for domain in DOMAINS:
         src[f"{domain} Score %"] = (
             src[f"{domain} Score % (raw)"] * src["meta_multiplier"]
@@ -655,27 +574,12 @@ def build_scored_table(wide: pd.DataFrame, weights: dict[str, float],
 
 # ──────────────────────────────────────────────────────────
 # THREE-MODEL DAILY SYSTEM
-#
-# SNAPSHOT MODEL: mean of all Snapshot submissions for a given day.
-#   Captures how the day felt in real time, averaged across check-ins.
-#
-# REVIEW MODEL: the Review of today or Review of yesterday submission,
-#   attributed to the correct calendar day.
-#   "Review of yesterday" submitted on date D is attributed to D-1.
-#   This is a single considered retrospective score per day.
-#
-# COMPARISON: for days with both a snapshot mean and a review,
-#   compute the difference (review - snapshot average) per domain.
-#   Positive = review rated worse than snapshots suggested.
-#   Negative = review rated better than snapshots suggested.
 # ──────────────────────────────────────────────────────────
-
 FORM_SNAPSHOT         = "snapshot"
 FORM_REVIEW_TODAY     = "review of today (evening)"
 FORM_REVIEW_YESTERDAY = "review of yesterday"
 
 def _get_form_type(row: pd.Series) -> str:
-    """Return normalised submission type string from the form field."""
     val = str(row.get("submission_type", "") or "").strip().lower()
     if FORM_REVIEW_YESTERDAY in val:
         return FORM_REVIEW_YESTERDAY
@@ -684,16 +588,13 @@ def _get_form_type(row: pd.Series) -> str:
     return FORM_SNAPSHOT
 
 def _score_submissions(wide: pd.DataFrame, weights: dict) -> pd.DataFrame:
-    """Score every individual submission and attach form_type and review_date."""
     if wide.empty:
         return pd.DataFrame()
     scored = build_scored_table(wide, weights, daily_only=False)
 
-    # Map submission_type from wide by submission_id
     type_map = wide.set_index("submission_id").apply(_get_form_type, axis=1).to_dict()
     scored["form_type"] = scored["submission_id"].map(type_map).fillna(FORM_SNAPSHOT)
 
-    # review_date: for "review of yesterday", attribute to the previous calendar day
     import datetime as _rdt
     def _review_date(row):
         if row["form_type"] == FORM_REVIEW_YESTERDAY:
@@ -708,10 +609,6 @@ def _score_submissions(wide: pd.DataFrame, weights: dict) -> pd.DataFrame:
     return scored
 
 def build_snapshot_model(wide: pd.DataFrame, weights: dict) -> pd.DataFrame:
-    """
-    One row per calendar day: mean of all Snapshot submissions for that day.
-    Days with no snapshots are excluded.
-    """
     if wide.empty:
         return pd.DataFrame()
 
@@ -741,13 +638,6 @@ def build_snapshot_model(wide: pd.DataFrame, weights: dict) -> pd.DataFrame:
     return agg.sort_values("date").reset_index(drop=True)
 
 def build_review_model(wide: pd.DataFrame, weights: dict) -> pd.DataFrame:
-    """
-    One row per calendar day: the review submission attributed to that day.
-    'Review of today' → attributed to submitted_date.
-    'Review of yesterday' → attributed to submitted_date - 1.
-    If multiple reviews exist for the same attributed day, take the latest.
-    Days with no review are excluded.
-    """
     if wide.empty:
         return pd.DataFrame()
 
@@ -756,7 +646,6 @@ def build_review_model(wide: pd.DataFrame, weights: dict) -> pd.DataFrame:
     if reviews.empty:
         return pd.DataFrame()
 
-    # Take the latest review per attributed day
     reviews = (
         reviews.sort_values("submitted_at")
         .groupby("review_date")
@@ -774,16 +663,6 @@ def build_review_model(wide: pd.DataFrame, weights: dict) -> pd.DataFrame:
 
 def build_model_comparison(snapshot_model: pd.DataFrame,
                            review_model: pd.DataFrame) -> pd.DataFrame:
-    """
-    For each day with both a snapshot mean and a review, compute:
-      review_score - snapshot_mean_score per domain.
-
-    Positive = review rated the day worse than snapshots suggested.
-    Negative = review rated the day better than snapshots suggested.
-
-    Also computes an 'agreement' flag: True when the difference is < 10pp
-    across all domains (review and snapshots broadly agree).
-    """
     if snapshot_model.empty or review_model.empty:
         return pd.DataFrame()
 
@@ -811,20 +690,9 @@ def build_model_comparison(snapshot_model: pd.DataFrame,
     return merged.sort_values("date").reset_index(drop=True)
 
 def build_daily_aggregate(wide: pd.DataFrame, weights: dict[str, float]) -> pd.DataFrame:
-    """
-    Legacy wrapper — returns snapshot model for backward compatibility
-    with anything that still calls build_daily_aggregate.
-    Use build_snapshot_model / build_review_model / build_model_comparison directly.
-    """
     return build_snapshot_model(wide, weights)
-# Returns normalised per-item contribution for a single snapshot row
-# ──────────────────────────────────────────────────────────
+
 def get_snapshot_components(row: pd.Series, domain: str, weights: dict[str, float]) -> pd.DataFrame:
-    """
-    For a single row (snapshot), return each contributing item's
-    normalised score (0-100), effective weight, and weighted contribution.
-    Handles psychosis insight inversion and shows pre/post multiplier scores.
-    """
     by_code = _catalog_by_code()
     items = [
         q for q in QUESTION_CATALOG
@@ -843,7 +711,6 @@ def get_snapshot_components(row: pd.Series, domain: str, weights: dict[str, floa
         raw_val = row.get(code)
         norm_score = float(_normalise(pd.Series([raw_val]), q).iloc[0])
 
-        # Flip insight items in Psychosis
         inverted = domain == "Psychosis" and code in INSIGHT_INVERSE_CODES
         display_score = 100.0 - norm_score if inverted else norm_score
 
@@ -852,7 +719,7 @@ def get_snapshot_components(row: pd.Series, domain: str, weights: dict[str, floa
         label = re.sub(r"^(Have I |Do I |Am I |Is my |I've been |I noticed |I |There were |I had a )", "", label)
         label = label[:45] + "…" if len(label) > 45 else label
         if inverted:
-            label = f"{label} ⟳"   # mark inverted items
+            label = f"{label} ⟳"
 
         rows.append(dict(
             code=code,
@@ -933,17 +800,10 @@ def compute_personal_baseline(
     window_days: int = 90,
     episodes: pd.DataFrame | None = None,
 ) -> dict[str, dict]:
-    """
-    Personal baseline is computed from well days using snapshot-derived scores only.
-    Snapshot submissions are the most accurate point-in-time readings; reviews are
-    subject to recall bias and excluded from the baseline calculation.
-    Days with no snapshots (review-only days) are also excluded.
-    """
     empty = dict(mean=None, sd=None, n=0, lower=None, upper=None, reliable=False)
     if daily.empty:
         return {d: empty.copy() for d in DOMAINS}
 
-    # Only use days that have at least one snapshot submission
     working = daily.copy()
     if "has_snapshot" in working.columns:
         working = working[working["has_snapshot"] == True]
@@ -955,7 +815,6 @@ def compute_personal_baseline(
             ceiling = bands.get(domain, {}).get("well", 20.0)
             mask &= working[col].fillna(999) <= ceiling
 
-    # Exclude labelled episode periods
     if episodes is not None and not episodes.empty:
         ep_mask = pd.Series(False, index=working.index)
         for _, ep in episodes.iterrows():
@@ -1020,9 +879,6 @@ def extract_keywords(text: str, top_n: int = 8) -> list[str]:
     return [w for w, _ in Counter(filtered).most_common(top_n)]
 
 def build_notes_df(wide: pd.DataFrame, daily_scored: pd.DataFrame, bands: dict) -> pd.DataFrame:
-    """
-    Extract all non-empty text notes, join with the day's band status.
-    """
     if wide.empty or "experience_description" not in wide.columns:
         return pd.DataFrame()
 
@@ -1031,13 +887,11 @@ def build_notes_df(wide: pd.DataFrame, daily_scored: pd.DataFrame, bands: dict) 
     notes = notes[["submission_id", "submitted_at", "submitted_date", "experience_description"]].copy()
     notes["date"] = notes["submitted_date"]
 
-    # Join domain scores from daily (first-of-day)
     if not daily_scored.empty:
         score_cols = [f"{d} Score %" for d in DOMAINS]
         day_scores = daily_scored[["date"] + [c for c in score_cols if c in daily_scored.columns]].copy()
         notes = notes.merge(day_scores, on="date", how="left")
 
-    # Classify by overall band (worst domain that day)
     def _worst_band(row):
         bands_on_day = [classify_score(row.get(f"{d} Score %", 0), d, bands) for d in DOMAINS]
         order = ["critical", "warning", "caution", "watch", "well", "unknown"]
@@ -1080,11 +934,6 @@ def _add_vline_date(fig: go.Figure, x: str, label: str,
                     line_width: float = 1.5,
                     font_color: str = "rgba(0,150,100,1)",
                     font_size: int = 8) -> go.Figure:
-    """
-    Add a vertical line + annotation on a date-string x-axis.
-    Uses add_shape + add_annotation instead of add_vline, which
-    fails when it tries to compute a numeric midpoint of date strings.
-    """
     fig.add_shape(
         type="line",
         xref="x", yref="paper",
@@ -1156,7 +1005,6 @@ def make_band_chart(
                               annotation_text="+/-1 SD", annotation_position="left",
                               annotation_font_size=9)
 
-    # 7-day rolling average
     if show_rolling:
         avg_col = f"{col} 7d Avg"
         if avg_col in daily.columns:
@@ -1189,11 +1037,9 @@ def make_band_chart(
             hovertemplate="%{x}<br>%{y:.1f}% — notable movement<extra></extra>",
         ))
 
-    # Episode overlays
     if episodes is not None and not episodes.empty:
         fig = add_episode_overlays(fig, episodes)
 
-    # Medication change markers
     if med_notes is not None and not med_notes.empty:
         for _, m in med_notes.iterrows():
             note_text = str(m.get("medication_notes",""))[:40]
@@ -1237,7 +1083,6 @@ def make_overview_chart(daily: pd.DataFrame, bands: dict, height: int = 380) -> 
     return fig
 
 def make_component_bar(components: pd.DataFrame, domain: str, height: int = 360) -> go.Figure:
-    """Horizontal bar chart of normalised item scores for one domain in the latest snapshot."""
     if components.empty:
         return go.Figure()
     colour = DOMAIN_COLOURS.get(domain, "#1C7EF2")
@@ -1267,13 +1112,11 @@ def make_component_bar(components: pd.DataFrame, domain: str, height: int = 360)
     return fig
 
 def _hex_to_rgba(hex_colour: str, alpha: float = 0.15) -> str:
-    """Convert a #RRGGBB hex string to an rgba(...) string."""
     h = hex_colour.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
 
 def make_component_radar(components_by_domain: dict[str, pd.DataFrame], height: int = 420) -> go.Figure:
-    """Radar chart overlaying all domains using their top items."""
     fig = go.Figure()
     for domain, comp in components_by_domain.items():
         if comp.empty:
@@ -1281,7 +1124,7 @@ def make_component_radar(components_by_domain: dict[str, pd.DataFrame], height: 
         top = comp.head(6)
         categories = top["label"].tolist()
         values = top["norm_score"].tolist()
-        categories += [categories[0]]  # close the polygon
+        categories += [categories[0]]
         values     += [values[0]]
         colour = DOMAIN_COLOURS.get(domain, "#888888")
         fig.add_trace(go.Scatterpolar(
@@ -1302,7 +1145,6 @@ def make_component_radar(components_by_domain: dict[str, pd.DataFrame], height: 
     return fig
 
 def make_snapshot_timeline(snapshots: pd.DataFrame, bands: dict, height: int = 280) -> go.Figure:
-    """Stacked area / line chart of all snapshots per day coloured by overall score."""
     if snapshots.empty:
         return go.Figure()
     fig = go.Figure()
@@ -1327,17 +1169,17 @@ def make_snapshot_timeline(snapshots: pd.DataFrame, bands: dict, height: int = 2
     return fig
 
 # ──────────────────────────────────────────────────────────
-# WARNINGS  (with Mixed-aware deduplication)
+# WARNINGS  (score-based primary domain selection)
 # ──────────────────────────────────────────────────────────
 def build_warnings(daily: pd.DataFrame, snapshots: pd.DataFrame, bands: dict,
                    movement_threshold: float = DEFAULT_MOVEMENT_THRESHOLD) -> pd.DataFrame:
     """
-    Build warnings with domain deduplication:
+    Build warnings with score-based domain prioritisation:
 
-    Mixed takes precedence over individual Depression and Mania alerts.
-    If Mixed is in caution/warning/critical, Depression and Mania alerts
-    are suppressed as primary warnings — they are retained as 'suppressed'
-    rows with a note so they can be shown as context rather than top-level alerts.
+    Among Depression, Mania, and Mixed — whichever has the highest score
+    becomes the primary alert. The others are retained as 'suppressed'
+    context rows. This means a Caution Mixed will not override a higher-
+    scoring Warning Mania or Depression.
     Psychosis is always independent and never suppressed.
     Movement alerts are never suppressed.
     """
@@ -1348,6 +1190,8 @@ def build_warnings(daily: pd.DataFrame, snapshots: pd.DataFrame, bands: dict,
         deltas = {d: float(row.get(f"{d} Score % Delta", 0) or 0) for d in DOMAINS}
         domain_bands = {d: classify_score(scores[d], d, bands) for d in DOMAINS}
 
+        # Among Depression, Mania, Mixed — whichever scores highest is the primary alert.
+        # The others are suppressed as context. Psychosis is always independent.
         mood_domains = ["Depression", "Mania", "Mixed"]
         elevated_mood = [
             d for d in mood_domains
@@ -1460,7 +1304,6 @@ def _episode_risk_score(daily: pd.DataFrame) -> dict[str, float]:
 
 def _consecutive_days_in_band(daily: pd.DataFrame, domain: str,
                                bands: dict, target_bands: list[str]) -> int:
-    """Count consecutive most-recent days where domain was in any of the target bands."""
     if daily.empty:
         return 0
     col = f"{domain} Score %"
@@ -1537,8 +1380,6 @@ EPISODE_LINE_COLOURS = {
 
 @st.cache_data(ttl=30)
 def load_episodes() -> pd.DataFrame:
-    """Load episode log from Google Sheet. Returns DataFrame with columns:
-    episode_id, episode_type, start_date, end_date, notes."""
     ws = safe_worksheet(EPISODE_TAB)
     if ws is None:
         return pd.DataFrame(columns=["episode_id","episode_type","start_date","end_date","notes"])
@@ -1597,7 +1438,6 @@ def delete_episode(episode_id: str) -> tuple[bool, str]:
 
 def add_episode_overlays(fig: go.Figure, episodes: pd.DataFrame,
                          x_is_date: bool = True) -> go.Figure:
-    """Add shaded episode regions and start/end markers to any Plotly figure."""
     if episodes.empty:
         return fig
     for _, ep in episodes.iterrows():
@@ -1623,7 +1463,6 @@ def add_episode_overlays(fig: go.Figure, episodes: pd.DataFrame,
 # MEDICATION NOTES (from form field)
 # ──────────────────────────────────────────────────────────
 def build_med_notes_df(wide: pd.DataFrame, daily_scored: pd.DataFrame) -> pd.DataFrame:
-    """Extract non-empty medication change notes from form, joined with daily scores."""
     if wide.empty or "medication_notes" not in wide.columns:
         return pd.DataFrame()
     med = wide[
@@ -1641,9 +1480,7 @@ def build_med_notes_df(wide: pd.DataFrame, daily_scored: pd.DataFrame) -> pd.Dat
     return med.sort_values("submitted_at", ascending=False).reset_index(drop=True)
 
 # ──────────────────────────────────────────────────────────
-# MEDICATION LOG (dedicated tab — log change events directly)
-# Stored in Google Sheet tab "Medication Log" with columns:
-#   med_id | date | medication | dose | dose_unit | frequency | change_type | notes
+# MEDICATION LOG (dedicated tab)
 # ──────────────────────────────────────────────────────────
 MED_CHANGE_TYPES = ["Started", "Increased", "Decreased", "Stopped", "Dose adjusted", "Added PRN", "Other"]
 MED_DOSE_UNITS   = ["mg", "mcg", "g", "ml", "units", "tablets"]
@@ -1652,7 +1489,6 @@ MED_FREQUENCIES  = ["Once daily", "Twice daily", "Three times daily", "Four time
 
 @st.cache_data(ttl=30)
 def load_med_log() -> pd.DataFrame:
-    """Load the medication change log from the Medication Log sheet tab."""
     ws = safe_worksheet(MED_LOG_TAB)
     if ws is None:
         return pd.DataFrame(columns=["med_id","date","medication","dose","dose_unit",
@@ -1710,10 +1546,6 @@ def delete_med_event(med_id: str) -> tuple[bool, str]:
     return _save_med_log(updated)
 
 def get_current_medications(med_log: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return the most recent event per medication name.
-    Excludes medications where the most recent event is 'Stopped'.
-    """
     if med_log.empty:
         return pd.DataFrame()
     latest = (
@@ -1725,7 +1557,6 @@ def get_current_medications(med_log: pd.DataFrame) -> pd.DataFrame:
     return active.sort_values("medication")
 
 def add_med_log_overlays(fig: go.Figure, med_log: pd.DataFrame) -> go.Figure:
-    """Add vertical dashed markers to a Plotly figure for each medication change event."""
     if med_log.empty:
         return fig
     for _, row in med_log.iterrows():
@@ -1739,11 +1570,6 @@ def add_med_log_overlays(fig: go.Figure, med_log: pd.DataFrame) -> go.Figure:
 # ──────────────────────────────────────────────────────────
 # CYCLE LOG
 # ──────────────────────────────────────────────────────────
-# Stores menstrual cycle events: period start, period end, ovulation.
-# Used to overlay cycle phase on domain score charts and to analyse
-# whether episode clustering correlates with cycle phase over time.
-# Sheet columns: cycle_id | date | event_type | notes
-
 CYCLE_EVENT_TYPES = ["Period start", "Period end", "Ovulation"]
 
 @st.cache_data(ttl=30)
@@ -1795,15 +1621,6 @@ def delete_cycle_event(cycle_id: str) -> tuple[bool, str]:
     return _save_cycle_log(updated)
 
 def compute_cycle_phase(date, cycle_log: pd.DataFrame) -> str | None:
-    """
-    Given a date and the cycle log, return the estimated cycle phase:
-      'menstrual'  — within a period (between period start and end)
-      'follicular' — between period end and ovulation
-      'ovulation'  — within 1 day of logged ovulation
-      'luteal'     — between ovulation and next period start
-      'late_luteal'— last 5 days before next period start (highest vulnerability)
-    Returns None if insufficient data to determine phase.
-    """
     if cycle_log.empty:
         return None
     import datetime as _dt
@@ -1813,19 +1630,16 @@ def compute_cycle_phase(date, cycle_log: pd.DataFrame) -> str | None:
     ends      = log[log["event_type"] == "Period end"]["date"].tolist()
     ovulations= log[log["event_type"] == "Ovulation"]["date"].tolist()
 
-    # Check if date falls within a period
     for s in starts:
         matching_ends = [e for e in ends if e >= s]
         end = min(matching_ends) if matching_ends else s + _dt.timedelta(days=7)
         if s <= date <= end:
             return "menstrual"
 
-    # Check ovulation proximity
     for ov in ovulations:
         if abs((date - ov).days) <= 1:
             return "ovulation"
 
-    # Find surrounding events
     prev_ov   = max((ov for ov in ovulations if ov <= date), default=None)
     next_start= min((s  for s  in starts    if s  >  date), default=None)
     prev_end  = max((e  for e  in ends      if e  <  date), default=None)
@@ -1842,7 +1656,6 @@ def compute_cycle_phase(date, cycle_log: pd.DataFrame) -> str | None:
     return None
 
 def add_cycle_overlays(fig: go.Figure, cycle_log: pd.DataFrame) -> go.Figure:
-    """Add vertical markers for cycle events on a Plotly figure."""
     if cycle_log.empty:
         return fig
     event_styles = {
@@ -1862,10 +1675,6 @@ def add_cycle_overlays(fig: go.Figure, cycle_log: pd.DataFrame) -> go.Figure:
     return fig
 
 def compute_phase_domain_means(daily: pd.DataFrame, cycle_log: pd.DataFrame) -> pd.DataFrame:
-    """
-    For each day in daily, assign a cycle phase, then compute mean domain
-    scores per phase. Returns a pivot table useful for spotting phase-linked patterns.
-    """
     if daily.empty or cycle_log.empty:
         return pd.DataFrame()
     daily_copy = daily.copy()
@@ -1902,7 +1711,6 @@ def generate_clinician_report(
     comparison: pd.DataFrame = None,
     window_days: int = 30,
 ) -> str:
-    """Generate a structured plain-text / markdown clinician summary."""
     import datetime
     today = datetime.date.today()
     window_start = today - datetime.timedelta(days=window_days)
@@ -1913,7 +1721,6 @@ def generate_clinician_report(
     lines.append(f"**Period:** Last {window_days} days ({window_start.strftime('%d %b')} – {today.strftime('%d %b %Y')})")
     lines.append("")
 
-    # ── Current status ──────────────────────────────────────
     lines.append("## Current Status")
     if not daily.empty:
         latest = daily.sort_values("date").iloc[-1]
@@ -1936,7 +1743,6 @@ def generate_clinician_report(
         lines.append("*No daily data available.*")
     lines.append("")
 
-    # ── Recent trends ───────────────────────────────────────
     lines.append(f"## Domain Trends (last {window_days} days)")
     period = daily[daily["date"] >= window_start] if not daily.empty else daily
     if not period.empty:
@@ -1957,7 +1763,6 @@ def generate_clinician_report(
         lines.append("*No data in this period.*")
     lines.append("")
 
-    # ── Personal baseline ───────────────────────────────────
     lines.append("## Personal Baseline")
     lines.append("*(Computed from days where all domains were in the Well band)*")
     lines.append("")
@@ -1970,7 +1775,6 @@ def generate_clinician_report(
             lines.append(f"- **{d}:** baseline not yet reliable ({pb.get('n',0)} well days recorded)")
     lines.append("")
 
-    # ── Episodes ────────────────────────────────────────────
     lines.append("## Labelled Episodes")
     if not episodes.empty:
         recent_ep = episodes[
@@ -1989,10 +1793,7 @@ def generate_clinician_report(
         lines.append("*No episodes labelled yet.*")
     lines.append("")
 
-    # ── Medication notes ────────────────────────────────────
     lines.append("## Medications")
-
-    # Current medications from the dedicated log
     current_meds = get_current_medications(med_log if med_log is not None and not med_log.empty
                                            else pd.DataFrame())
     if not current_meds.empty:
@@ -2004,7 +1805,6 @@ def generate_clinician_report(
                          f"(last change: {m['change_type']} on {m['date']})")
         lines.append("")
 
-    # Changes in the report window
     if med_log is not None and not med_log.empty:
         recent_log = med_log[med_log["date"] >= window_start]
         if not recent_log.empty:
@@ -2016,7 +1816,6 @@ def generate_clinician_report(
                              f"{m['medication']} {dose_str}{note_str}")
             lines.append("")
 
-    # Form-field medication notes as supplementary
     if not med_notes.empty:
         recent_med = med_notes[med_notes["date"] >= window_start]
         if not recent_med.empty:
@@ -2031,7 +1830,6 @@ def generate_clinician_report(
         lines.append("*No medication information recorded.*")
     lines.append("")
 
-    # ── Cycle log ───────────────────────────────────────────
     if cycle_log is not None and not cycle_log.empty:
         lines.append("## Menstrual Cycle")
         import datetime as _exp_dt
@@ -2051,7 +1849,6 @@ def generate_clinician_report(
             lines.append(phase_means.to_string())
         lines.append("")
 
-    # ── Journal highlights ──────────────────────────────────
     lines.append("## Journal Highlights")
     lines.append("*(Entries from days in Caution band or above)*")
     if not notes.empty:
@@ -2063,7 +1860,6 @@ def generate_clinician_report(
                 text = str(n.get("experience_description",""))[:300]
                 lines.append(f"- **{n['date']}** [{band.upper()}]: {text}" +
                              ("…" if len(str(n.get("experience_description",""))) > 300 else ""))
-                # Append any comments for this entry
                 if comments is not None and not comments.empty:
                     sid = str(n.get("submission_id",""))
                     entry_comments = get_comments_for_submission(sid, comments)
@@ -2077,7 +1873,6 @@ def generate_clinician_report(
         lines.append("*No journal entries.*")
     lines.append("")
 
-    # ── Footer ──────────────────────────────────────────────
     lines.append("---")
     lines.append("*This summary was generated automatically from self-reported daily monitoring data. "
                  "It is intended to support clinical conversation, not to replace clinical judgement.*")
@@ -2087,31 +1882,21 @@ def generate_clinician_report(
 # ──────────────────────────────────────────────────────────
 # PSYCHOSIS INSIGHT DIVERGENCE DETECTOR
 # ──────────────────────────────────────────────────────────
-# Primary psychosis symptom items — these capture the experiences themselves
 PSY_PRIMARY_CODES = [
-    "psy_heard_saw",        # hallucinations
-    "psy_suspicious",       # paranoia / persecutory thinking
-    "psy_trust_perceptions",# derealisation / derealization
-    "psy_distress",         # distress caused by experiences
+    "psy_heard_saw",
+    "psy_suspicious",
+    "psy_trust_perceptions",
+    "psy_distress",
 ]
 
-# Insight items — these capture awareness that something is wrong
-# In our model these are inverted in the Psychosis domain, but here we
-# read them at face value: high = good insight, low = poor insight
 PSY_INSIGHT_CODES = [
-    "meta_something_wrong",   # "do I think something may be wrong?" — high = good insight
-    "meta_concerned",         # "am I concerned about my current state?" — high = good insight
-    "psy_confidence_reality", # inverted: high confidence in abnormal experiences = poor insight
-    "psy_trust_perceptions",  # inverted: high trust in own perceptions = retained metacognitive doubt
-                              # someone who still distrusts their perceptions hasn't fully lost insight
+    "meta_something_wrong",
+    "meta_concerned",
+    "psy_confidence_reality",
+    "psy_trust_perceptions",
 ]
 
 def _mean_normalised(row: pd.Series, codes: list[str], invert: bool = False) -> float | None:
-    """
-    Mean normalised score (0–100) for a set of scale_1_5 items in a row.
-    Returns None if no items are present.
-    invert=True flips the score (100 - score) before averaging.
-    """
     by_code = _catalog_by_code()
     scores = []
     for code in codes:
@@ -2132,25 +1917,6 @@ def detect_psychosis_insight_divergence(
     drop_threshold: float = 15.0,
     divergence_threshold: float = 12.0,
 ) -> dict:
-    """
-    Analyse the last `window` days of daily data to detect whether a fall
-    in psychosis scores reflects genuine improvement or possible loss of insight.
-
-    Insight composite uses four items:
-      - meta_something_wrong:   high = good insight (notices something wrong)
-      - meta_concerned:         high = good insight (concerned about state)
-      - psy_confidence_reality: INVERTED — high confidence in abnormal experiences = poor insight
-      - psy_trust_perceptions:  INVERTED — high trust in perceptions = less metacognitive doubt
-                                Someone who still distrusts their perceptions retains insight.
-
-    Returns a dict with:
-      status:         "improvement" | "ambiguous" | "loss_of_insight" | "stable" | "insufficient_data"
-      primary_delta:  change in mean primary symptom score over window (negative = falling)
-      insight_delta:  change in composite insight score over window (negative = insight worsening)
-      finding:        plain-English description
-      severity:       "ok" | "caution" | "warning"
-      days_analysed:  int
-    """
     result = dict(
         status="insufficient_data",
         primary_delta=None,
@@ -2167,15 +1933,10 @@ def detect_psychosis_insight_divergence(
     n = len(recent)
     result["days_analysed"] = n
 
-    # Primary symptom scores — read at face value (higher = more symptomatic)
     primary_scores = recent.apply(
         lambda r: _mean_normalised(r, PSY_PRIMARY_CODES, invert=False), axis=1
     ).dropna()
 
-    # Composite insight score — combines all four insight items.
-    # meta_something_wrong and meta_concerned: high score = good insight, read at face value.
-    # psy_confidence_reality and psy_trust_perceptions: high score = poor insight, so inverted.
-    # We compute a weighted mean: 0.5 for the meta items together, 0.5 for the psy items together.
     def _composite_insight(row: pd.Series) -> float | None:
         meta_score = _mean_normalised(
             row, ["meta_something_wrong", "meta_concerned"], invert=False
@@ -2193,7 +1954,6 @@ def detect_psychosis_insight_divergence(
 
     insight_scores = recent.apply(_composite_insight, axis=1).dropna()
 
-    # Also track confidence and trust items separately for the loss-of-insight classifier
     confidence_scores = recent.apply(
         lambda r: _mean_normalised(r, ["psy_confidence_reality", "psy_trust_perceptions"], invert=True),
         axis=1,
@@ -2203,7 +1963,6 @@ def detect_psychosis_insight_divergence(
         return result
 
     def _trend(s: pd.Series) -> float:
-        """Change = last-third mean minus first-third mean."""
         third = max(1, len(s) // 3)
         return float(s.tail(third).mean() - s.head(third).mean())
 
@@ -2218,7 +1977,6 @@ def detect_psychosis_insight_divergence(
     insight_falling = insight_delta  < -divergence_threshold
     insight_stable  = abs(insight_delta) < divergence_threshold
     insight_rising  = insight_delta  >  divergence_threshold
-    # confidence_poor: psy_confidence and psy_trust both moving in bad direction
     confidence_poor = confidence_delta < -divergence_threshold
 
     if not primary_falling:
@@ -2231,8 +1989,7 @@ def detect_psychosis_insight_divergence(
         result["status"]  = "improvement"
         result["finding"] = (
             f"Psychosis scores have fallen (~{abs(primary_delta):.0f}pp over {n} days) "
-            f"and the insight composite (including concern, confidence in experiences, "
-            f"and trust in perceptions) is "
+            f"and the insight composite is "
             f"{'holding steady' if insight_stable else 'improving'}. "
             f"This pattern is consistent with genuine improvement."
         )
@@ -2255,8 +2012,7 @@ def detect_psychosis_insight_divergence(
             f"but insight indicators have declined significantly (~{abs(insight_delta):.0f}pp) "
             f"and confidence in the reality of experiences / trust in perceptions appears "
             f"to be increasing. This pattern may reflect loss of insight rather than "
-            f"genuine improvement — experiences may feel more real and less alarming, "
-            f"not because they are resolving. This warrants prompt clinical review."
+            f"genuine improvement. This warrants prompt clinical review."
         )
         result["severity"] = "warning"
 
@@ -2274,7 +2030,6 @@ def detect_psychosis_insight_divergence(
 def _generate_insights(daily, risk, trends, bands, personal, movement_threshold) -> list[dict]:
     insights: list[dict] = []
 
-    # Active multiplier — surface prominently when non-trivial
     if not daily.empty and "meta_multiplier" in daily.columns:
         latest_mult = float(daily.sort_values("date").iloc[-1].get("meta_multiplier", 1.0) or 1.0)
         if latest_mult >= 1.20:
@@ -2287,7 +2042,6 @@ def _generate_insights(daily, risk, trends, bands, personal, movement_threshold)
                 text=f"**Meta force multiplier is ×{latest_mult:.2f}** — mild amplification "
                      f"active (intensifying state or feeling unlike yourself)."))
 
-    # Psychosis insight divergence
     psy_divergence = detect_psychosis_insight_divergence(daily)
     if psy_divergence["status"] not in ("stable", "insufficient_data", "improvement"):
         insights.append(dict(
@@ -2296,7 +2050,6 @@ def _generate_insights(daily, risk, trends, bands, personal, movement_threshold)
             text=f"**Psychosis score interpretation:** {psy_divergence['finding']}",
         ))
     elif psy_divergence["status"] == "improvement":
-        # Surface positive finding too — reassurance is useful information
         insights.append(dict(
             level="ok",
             domain="Psychosis",
@@ -2364,8 +2117,7 @@ def render_weights_editor(weights: dict[str, float]) -> dict[str, float]:
     st.markdown("### Scoring weights")
     st.caption(
         "Note: sleep weights are additionally scaled by domain-specific multipliers "
-        "(Depression: ×0.35/×0.45 for hours/quality; Mania & Mixed: ×1.0). "
-        "This reflects sleep's role as a driver in mania/mixed but a symptom in depression."
+        "(Depression: ×0.35/×0.45 for hours/quality; Mania & Mixed: ×1.0)."
     )
     if not safe_worksheet(SETTINGS_TAB):
         st.warning(f"Worksheet '{SETTINGS_TAB}' not found — weights are in-memory only.")
@@ -2459,7 +2211,7 @@ snapshots_df   = build_scored_table(wide_df, weights, daily_only=False)
 snapshot_model_df = build_snapshot_model(wide_df, weights)
 review_model_df   = build_review_model(wide_df, weights)
 comparison_df     = build_model_comparison(snapshot_model_df, review_model_df)
-daily_df          = snapshot_model_df   # daily_df = snapshot model for all existing code
+daily_df          = snapshot_model_df
 warnings_df    = build_warnings(daily_df, snapshots_df, bands, mv_threshold)
 episodes_df    = load_episodes()
 personal_bl    = compute_personal_baseline(daily_df, bands, pb_window, episodes=episodes_df)
@@ -2476,7 +2228,6 @@ with st.sidebar:
     st.markdown("## Filters")
     st.caption("Applied to all charts and tables.")
 
-    # Refresh control
     import datetime as _dt
     if "last_refreshed" not in st.session_state:
         st.session_state["last_refreshed"] = _dt.datetime.now()
@@ -2524,7 +2275,6 @@ with st.sidebar:
     st.markdown("#### Chart height")
     chart_height = st.slider("px", 200, 600, 320, 20, key="filter_height")
 
-# Apply date filter to daily_df and snapshots_df
 def _apply_date_filter(df: pd.DataFrame, date_col: str = "date") -> pd.DataFrame:
     if df.empty or filter_start is None:
         return df
@@ -2552,7 +2302,7 @@ if not daily_df.empty:
 else:
     m5.metric("Latest overall score", "—")
 
-# DOMAIN STATUS ROW
+# DOMAIN STATUS ROW  ── colours match graph colours
 if not daily_df.empty:
     latest = daily_df.sort_values("date").iloc[-1]
     latest_multiplier = float(latest.get("meta_multiplier", 1.0) or 1.0)
@@ -2574,10 +2324,12 @@ if not daily_df.empty:
         streak      = _consecutive_days_in_band(daily_df, domain, bands, ["caution","warning","critical"])
         streak_note = f"\n*{streak}d elevated streak*" if streak >= 2 else ""
         raw_note    = f"\n*raw: {raw_score:.1f}%*" if latest_multiplier > 1.05 else ""
+        domain_colour = DOMAIN_COLOURS.get(domain, "#888888")
         status_cols[i].markdown(
-            f"**{domain}**  \n"
+            f'<span style="color:{domain_colour};font-weight:700;font-size:1em">{domain}</span>  \n'
             f"{BAND_EMOJI[band]} **{band.upper()}** — {score:.1f}%  \n"
-            f"Δ {delta:+.1f}pp{raw_note}{pb_note}{streak_note}"
+            f"Δ {delta:+.1f}pp{raw_note}{pb_note}{streak_note}",
+            unsafe_allow_html=True,
         )
     if latest_multiplier > 1.05:
         st.caption(
@@ -2587,7 +2339,6 @@ if not daily_df.empty:
             f"Raw (pre-multiplier) scores shown in italics above."
         )
 
-    # Review context — if a review exists for today or yesterday, show it
     import datetime as _rev_dt
     today_date = _rev_dt.date.today()
     yesterday  = today_date - _rev_dt.timedelta(days=1)
@@ -2626,12 +2377,12 @@ with tab_overview:
     else:
         sev_icon = {"High": "🔴", "Medium": "🟡", "Movement": "🟠"}
 
-        primary   = warnings_df[~warnings_df["suppressed"]] if "suppressed" in warnings_df.columns else warnings_df
+        primary    = warnings_df[~warnings_df["suppressed"]] if "suppressed" in warnings_df.columns else warnings_df
         suppressed = warnings_df[warnings_df["suppressed"]]  if "suppressed" in warnings_df.columns else pd.DataFrame()
 
-if primary.empty:
+        if primary.empty:
             st.success("No active primary alerts.")
-else:
+        else:
             for _, w in primary.iterrows():
                 domain_colour = DOMAIN_COLOURS.get(w["domain"], "#888888")
                 st.markdown(
@@ -2643,7 +2394,6 @@ else:
 
         # Show suppressed mood domains as context under the primary mood alert
         if not suppressed.empty and not primary.empty:
-            # Identify which mood domain is the primary alert
             mood_primary_rows = primary[primary["domain"].isin(["Depression", "Mania", "Mixed"])]
             if not mood_primary_rows.empty:
                 primary_name = mood_primary_rows.iloc[0]["domain"]
@@ -2682,7 +2432,6 @@ else:
             col = f"{d} Score %"
             if col not in daily_filtered.columns:
                 continue
-            # Snapshot average — solid
             fig_all.add_trace(go.Scatter(
                 x=dates, y=daily_filtered[col].tolist(), mode="lines", name=d,
                 line=dict(color=DOMAIN_COLOURS[d], width=2),
@@ -2698,7 +2447,6 @@ else:
                         opacity=0.4,
                         hovertemplate=f"{d} 7d avg: %{{y:.1f}}%<extra></extra>",
                     ))
-            # Review overlay — dashed, same colour, lighter
             if not review_model_df.empty and col in review_model_df.columns:
                 rev_filtered_chart = _apply_date_filter(review_model_df)
                 if not rev_filtered_chart.empty:
@@ -2711,7 +2459,6 @@ else:
                         opacity=0.6,
                         hovertemplate=f"{d} review: %{{y:.1f}}%<extra></extra>",
                     ))
-        # Smartwatch overlays
         watch_data = get_watch_series(daily_filtered, wide=wide_df)
         if not watch_data.empty:
             watch_dates = watch_data["date"].astype(str).tolist()
@@ -2735,10 +2482,8 @@ else:
             fig_all.add_hline(y=b.get("well", 20), line_dash="dot",
                               line_color="rgba(52,199,89,0.35)", line_width=1)
 
-        # Episode overlays on the all-domains chart
         fig_all = add_episode_overlays(fig_all, episodes_df)
 
-        # Medication markers — from form notes and from the dedicated log
         if not med_notes_df.empty:
             med_in_range = med_notes_df[
                 (med_notes_df["date"] >= filter_start) &
@@ -2755,7 +2500,6 @@ else:
             ] if filter_start else med_log_df
             fig_all = add_med_log_overlays(fig_all, log_in_range)
 
-        # Cycle event overlays
         if not cycle_log_df.empty:
             cycle_in_range = cycle_log_df[
                 (cycle_log_df["date"] >= filter_start) &
@@ -2772,7 +2516,6 @@ else:
         )
         st.plotly_chart(fig_all, use_container_width=True)
 
-        # Medication change markers on the overview chart
         if not med_notes_df.empty:
             med_in_range = med_notes_df[med_notes_df["date"] >= filter_start] if filter_start else med_notes_df
             if not med_in_range.empty:
@@ -2802,7 +2545,6 @@ with tab_snapshots_tab:
     if snapshots_filtered.empty:
         st.info("No snapshot data in the selected date range.")
     else:
-        # Timeline of all snapshots
         st.markdown("### All snapshots over time")
         filtered_domains = [d for d in selected_domains if d in DOMAINS]
         st.plotly_chart(make_snapshot_timeline(snapshots_filtered, bands, height=chart_height),
@@ -2810,7 +2552,6 @@ with tab_snapshots_tab:
 
         st.divider()
 
-        # Pick a snapshot to drill into
         st.markdown("### Component breakdown — pick a submission")
         st.caption("Select a submission to see exactly what's contributing to each domain score.")
 
@@ -2821,7 +2562,6 @@ with tab_snapshots_tab:
             selected_snap_label = st.selectbox("Submission", snap_labels, index=0, key="snap_picker")
             snap_row = snap_options[snap_options["submitted_at"].astype(str) == selected_snap_label].iloc[0]
 
-            # Domain score summary for selected snapshot
             score_cols_s = st.columns(len(DOMAINS))
             for i, domain in enumerate(DOMAINS):
                 score = float(snap_row.get(f"{domain} Score %", 0) or 0)
@@ -2840,11 +2580,9 @@ with tab_snapshots_tab:
                 comp = get_snapshot_components(snap_row, domain, weights)
                 comp_by_domain[domain] = comp
 
-            # Radar overview
             st.markdown("#### Symptom radar — top items per domain")
             st.plotly_chart(make_component_radar(comp_by_domain, height=420), use_container_width=True)
 
-            # Bar charts per domain
             st.markdown("#### Per-domain item breakdown")
             d_cols = st.columns(2)
             for i, domain in enumerate(selected_domains):
@@ -2859,7 +2597,6 @@ with tab_snapshots_tab:
 
             st.divider()
 
-            # Submissions per day chart
             st.markdown("### Submissions per day")
             subs_per_day = (
                 snapshots_filtered.groupby("submitted_date")
@@ -2922,22 +2659,18 @@ with tab_analysis:
         st.markdown("### Review vs snapshot comparison")
         st.caption(
             "Shows whether your retrospective reviews of days align with how those days "
-            "felt in real time. A consistent pattern is clinically meaningful — "
-            "if reviews are always worse than snapshots, your memory of days may be "
-            "more negative than the lived experience. The reverse is also informative."
+            "felt in real time."
         )
         comp_analysis = _apply_date_filter(comparison_df) if not comparison_df.empty else comparison_df
         if comp_analysis.empty:
             st.info("Need days with both snapshots and a review to compute comparison.")
         else:
-            # Summary metrics
             ca1, ca2, ca3 = st.columns(3)
             ca1.metric("Days compared", len(comp_analysis))
             if "agreement" in comp_analysis.columns:
                 agree_pct = comp_analysis["agreement"].mean() * 100
                 ca2.metric("Agreement rate", f"{agree_pct:.0f}%",
                            help="Days where review and snapshot average differ by < 10pp across all domains")
-            # Mean difference per domain
             mean_diffs = {}
             for d in DOMAINS:
                 diff_col = f"{d} Difference (Review−Snapshot)"
@@ -2948,7 +2681,6 @@ with tab_analysis:
                 ca3.metric("Largest mean divergence",
                            f"{worst_domain}: {mean_diffs[worst_domain]:+.1f}pp")
 
-            # Divergence chart
             diff_cols_a = [f"{d} Difference (Review−Snapshot)" for d in DOMAINS
                            if f"{d} Difference (Review−Snapshot)" in comp_analysis.columns]
             if diff_cols_a:
@@ -2979,10 +2711,8 @@ with tab_analysis:
         st.divider()
         st.markdown("### Psychosis insight analysis")
         st.caption(
-            "A falling Psychosis score can mean two very different things: "
-            "genuine improvement, or loss of insight where experiences no longer "
-            "feel unusual or alarming. This section attempts to distinguish between them "
-            "by comparing primary symptom trends against insight indicator trends."
+            "A falling Psychosis score can mean genuine improvement, or loss of insight. "
+            "This section attempts to distinguish between them."
         )
 
         psy_div = detect_psychosis_insight_divergence(daily_filtered)
@@ -2993,9 +2723,8 @@ with tab_analysis:
             "warning": ("#FF3B30", "🔴"),
         }
         col_colour, col_emoji = sev_colours.get(psy_div["severity"], ("#8E8E93", "⚪"))
-        col_emoji_str = col_emoji
 
-        st.markdown(f"{col_emoji_str} **{psy_div['status'].replace('_', ' ').title()}**")
+        st.markdown(f"{col_emoji} **{psy_div['status'].replace('_', ' ').title()}**")
         st.markdown(psy_div["finding"])
 
         if psy_div["status"] not in ("insufficient_data", "stable"):
@@ -3003,19 +2732,13 @@ with tab_analysis:
             pd_cols[0].metric(
                 "Primary symptom trend",
                 f"{psy_div['primary_delta']:+.1f}pp" if psy_div["primary_delta"] is not None else "—",
-                help="Change in mean primary psychosis symptom score over the window. Negative = falling."
             )
             pd_cols[1].metric(
                 "Insight indicator trend",
                 f"{psy_div['insight_delta']:+.1f}pp" if psy_div["insight_delta"] is not None else "—",
-                help="Change in mean insight score over the window. Negative = insight worsening."
             )
-            pd_cols[2].metric(
-                "Days analysed",
-                psy_div["days_analysed"],
-            )
+            pd_cols[2].metric("Days analysed", psy_div["days_analysed"])
 
-            # Chart: primary symptom score vs insight score over the window
             if not daily_filtered.empty:
                 recent_w = daily_filtered.sort_values("date").tail(psy_div["days_analysed"]).copy()
                 insight_series = recent_w.apply(
@@ -3048,26 +2771,16 @@ with tab_analysis:
                     xaxis=dict(title=None),
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                     plot_bgcolor="white", paper_bgcolor="white",
-                    title=dict(
-                        text="Primary symptoms vs insight indicators",
-                        font=dict(size=13, color="#1C1C1E"), x=0,
-                    ),
+                    title=dict(text="Primary symptoms vs insight indicators",
+                               font=dict(size=13, color="#1C1C1E"), x=0),
                 )
                 st.plotly_chart(fig_psy, use_container_width=True)
-                st.caption(
-                    "**Primary symptoms** (purple): mean of hallucinations, paranoia, "
-                    "trust in perceptions, distress.  \n"
-                    "**Insight indicators** (green dashed): mean of 'something may be wrong' "
-                    "and 'concerned about my state'.  \n"
-                    "When both fall together, review is needed. "
-                    "When primary falls but insight holds, improvement is more likely genuine."
-                )
 
         st.divider()
         st.markdown("### Cross-domain correlation")
         corr = _cross_domain_correlation(daily_filtered)
         if not corr.empty:
-            st.caption("Pearson r across all filtered daily entries. Near 1 = co-move; near 0 = independent.")
+            st.caption("Pearson r across all filtered daily entries.")
             st.dataframe(corr.style.background_gradient(cmap="RdYlGn_r", vmin=-1, vmax=1),
                          use_container_width=True)
         else:
@@ -3118,12 +2831,6 @@ with tab_analysis:
                 days_no_snap   = int((daily_filtered.get("n_snapshots", pd.Series([0]*len(daily_filtered))) == 0).sum()) if "n_snapshots" in daily_filtered.columns else 0
                 ts3.metric("Days with no review", days_no_review)
                 ts4.metric("Days with no snapshot", days_no_snap)
-                if days_no_review > 0:
-                    st.caption(
-                        f"⚠ {days_no_review} day(s) in this period have no day review. "
-                        f"The daily aggregate for those days is based on snapshots only, "
-                        f"which is actually preferable for accuracy."
-                    )
 
         st.divider()
         if "func_sleep_hours" in daily_filtered.columns:
@@ -3142,18 +2849,14 @@ with tab_analysis:
         if watch_df.empty or (watch_df["sleep_score"].dropna().empty and watch_df["energy_score"].dropna().empty):
             st.info("No smartwatch data in the selected date range.")
         else:
-            # Latest values
             latest_watch = watch_df.dropna(how="all", subset=["sleep_score","energy_score"]).iloc[-1] if not watch_df.empty else None
             if latest_watch is not None:
                 w1, w2 = st.columns(2)
                 if pd.notna(latest_watch.get("sleep_score")):
-                    w1.metric("Latest sleep score", f"{latest_watch['sleep_score']:.0f} / 100",
-                              help="From smartwatch — higher is better")
+                    w1.metric("Latest sleep score", f"{latest_watch['sleep_score']:.0f} / 100")
                 if pd.notna(latest_watch.get("energy_score")):
-                    w2.metric("Latest energy score", f"{latest_watch['energy_score']:.0f} / 100",
-                              help="From smartwatch — higher is better")
+                    w2.metric("Latest energy score", f"{latest_watch['energy_score']:.0f} / 100")
 
-            # Chart
             fig_watch = go.Figure()
             dates_w = watch_df["date"].astype(str).tolist()
             if not watch_df["sleep_score"].dropna().empty:
@@ -3172,60 +2875,40 @@ with tab_analysis:
                 ))
             fig_watch.update_layout(
                 height=220, margin=dict(l=10, r=10, t=10, b=10),
-                yaxis=dict(range=[0, 100], title="Score", ticksuffix=""),
+                yaxis=dict(range=[0, 100], title="Score"),
                 xaxis=dict(title=None),
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 plot_bgcolor="white", paper_bgcolor="white",
             )
             st.plotly_chart(fig_watch, use_container_width=True)
 
-            # Correlation table
             st.markdown("#### Correlation with domain scores")
-            st.caption(
-                "**Same-day r**: correlation between the watch score and domain score on the same day.  \n"
-                "**Lagged r (1d)**: correlation between yesterday's watch score and today's domain score — "
-                "a stronger signal for prediction.  \n"
-                "Values near -1 mean high watch score → low domain score (good). "
-                "Near 0 means no relationship. Near +1 means high watch score → high domain score (unusual for sleep/energy)."
-            )
             corr_df = compute_watch_correlations(daily_filtered, wide=wide_df)
             if corr_df.empty:
                 st.info("Need at least 4 days of overlapping data for correlation.")
             else:
-                # Colour-code by strength and direction
                 def _colour_r(val):
-                    if pd.isna(val):
-                        return ""
-                    if val < -0.4:
-                        return "background-color: rgba(52,199,89,0.2)"   # strong negative = good
-                    if val < -0.2:
-                        return "background-color: rgba(52,199,89,0.1)"
-                    if val > 0.3:
-                        return "background-color: rgba(255,59,48,0.15)"  # positive = worth noting
+                    if pd.isna(val): return ""
+                    if val < -0.4: return "background-color: rgba(52,199,89,0.2)"
+                    if val < -0.2: return "background-color: rgba(52,199,89,0.1)"
+                    if val > 0.3:  return "background-color: rgba(255,59,48,0.15)"
                     return ""
-
                 styled = corr_df.style.map(
                     _colour_r, subset=["same_day_r", "lagged_r_1d"]
                 ).format({"same_day_r": "{:.3f}", "lagged_r_1d": "{:.3f}"}, na_rep="—")
                 st.dataframe(styled, use_container_width=True, hide_index=True)
-                st.caption(
-                    "Green = watch score negatively correlated with domain score (higher watch → lower symptoms). "
-                    "Red = unexpected positive correlation worth investigating."
-                )
 
 # ── JOURNAL ───────────────────────────────────────────────
 with tab_journal:
     st.markdown("## Journal")
     st.caption(
         "All written responses to 'How would I describe my experiences?', "
-        "colour-coded by the worst band reached that day. "
-        "Your personal baseline is shown in the band context where available."
+        "colour-coded by the worst band reached that day."
     )
 
     if notes_filtered.empty:
         st.info("No journal entries in the selected date range.")
     else:
-        # Search and filter controls
         j1, j2, j3 = st.columns([3, 2, 2])
         search_term = j1.text_input("Search entries", placeholder="keyword...", key="journal_search")
         band_filter = j2.multiselect(
@@ -3246,14 +2929,12 @@ with tab_journal:
 
         st.caption(f"Showing {len(filtered_notes)} of {len(notes_filtered)} entries")
 
-        # Keyword frequency chart
         if not filtered_notes.empty:
             with st.expander("Keyword frequency across shown entries", expanded=False):
                 st.plotly_chart(keyword_frequency_chart(filtered_notes), use_container_width=True)
 
         st.divider()
 
-        # Entry cards
         for row_idx, (_, entry) in enumerate(filtered_notes.iterrows()):
             band       = entry.get("worst_band", "unknown")
             hex_colour = BAND_COLOUR_HEX.get(band, "#8E8E93")
@@ -3262,7 +2943,6 @@ with tab_journal:
             text       = str(entry.get("experience_description", ""))
             keywords   = entry.get("keywords", [])
 
-            # Submission type badge — look up from wide_df for this date
             day_subs = wide_df[wide_df["submitted_date"] == entry.get("date")] if not wide_df.empty else pd.DataFrame()
             has_review   = not day_subs.empty and (day_subs["submission_type_derived"] == SUBMISSION_TYPE_REVIEW).any()
             has_snapshot = not day_subs.empty and (day_subs["submission_type_derived"] == SUBMISSION_TYPE_SNAPSHOT).any()
@@ -3274,7 +2954,6 @@ with tab_journal:
             elif has_snapshot:
                 type_badge = "📸 Snapshot"
 
-            # Domain context line — snapshot scores
             domain_context = []
             for d in DOMAINS:
                 sc = entry.get(f"{d} Score %")
@@ -3283,7 +2962,6 @@ with tab_journal:
                     domain_context.append(f"{d}: {sc:.0f}% ({b})")
             context_str = " · ".join(domain_context) if domain_context else ""
 
-            # Review score for this day — look up from review_model_df
             entry_date = entry.get("date")
             review_context_str = ""
             if not review_model_df.empty and entry_date is not None:
@@ -3297,7 +2975,6 @@ with tab_journal:
                     if rev_parts:
                         review_context_str = "📋 Review: " + " · ".join(rev_parts)
 
-            # Highlight search term
             display_text = text
             if search_term:
                 display_text = re.sub(
@@ -3307,7 +2984,6 @@ with tab_journal:
                     flags=re.IGNORECASE,
                 )
 
-            # Keyword tags
             kw_tags = " ".join(f"`{kw}`" for kw in keywords[:6]) if keywords else ""
 
             review_line = (
@@ -3333,7 +3009,6 @@ with tab_journal:
             if kw_tags:
                 st.markdown(f"*Keywords: {kw_tags}*")
 
-            # ── Comments for this entry ──────────────────────
             submission_id = str(entry.get("submission_id", ""))
             entry_comments = get_comments_for_submission(submission_id, comments_df)
 
@@ -3357,7 +3032,6 @@ with tab_journal:
                         unsafe_allow_html=True,
                     )
 
-            # Add comment input — key includes row index to guarantee uniqueness
             comment_key = f"comment_input_{submission_id}_{row_idx}"
             new_comment = st.text_input(
                 "Add a note to this entry",
@@ -3379,7 +3053,6 @@ with tab_journal:
 
             st.divider()
 
-    # Medication notes section
     st.markdown("## Medication Notes")
     st.caption("Days where medication changes were reported via the form.")
     med_filtered = _apply_date_filter(med_notes_df, "date") if not med_notes_df.empty else med_notes_df
@@ -3389,7 +3062,6 @@ with tab_journal:
         for _, m in med_filtered.iterrows():
             date_str  = str(m.get("date",""))
             note_text = str(m.get("medication_notes",""))
-            # Show domain scores for context
             domain_ctx = []
             for d in DOMAINS:
                 sc = m.get(f"{d} Score %")
@@ -3418,9 +3090,7 @@ with tab_episodes:
     st.markdown("## Episode Labelling")
     st.caption(
         "Label historical periods as episodes. These appear as shaded regions on all "
-        "domain charts and are used to exclude episode periods from the personal baseline. "
-        "Requires a Google Sheet tab named **Episode Log** with columns: "
-        "`episode_id, episode_type, start_date, end_date, notes`."
+        "domain charts and are used to exclude episode periods from the personal baseline."
     )
 
     ws_exists = safe_worksheet(EPISODE_TAB) is not None
@@ -3430,7 +3100,6 @@ with tab_episodes:
             "in your Google Sheet, then episode saving will work."
         )
 
-    # Add new episode form
     st.markdown("### Add episode")
     with st.form("add_episode_form"):
         fc1, fc2, fc3 = st.columns([2, 2, 3])
@@ -3452,9 +3121,8 @@ with tab_episodes:
 
     st.divider()
 
-    # Existing episodes
     st.markdown("### Labelled episodes")
-    episodes_df = load_episodes()  # refresh after potential add
+    episodes_df = load_episodes()
     if episodes_df.empty:
         st.info("No episodes labelled yet.")
     else:
@@ -3481,7 +3149,6 @@ with tab_episodes:
                             st.error(msg)
             st.divider()
 
-    # Episode context chart — domain scores around each episode
     if not episodes_df.empty and not daily_df.empty:
         st.markdown("### Domain scores around each episode")
         st.caption("Shows scores in the 14 days before, during, and after each labelled episode.")
@@ -3498,7 +3165,6 @@ with tab_episodes:
                 continue
             with st.expander(f"{ep['episode_type']} — {ep['start_date']} to {ep['end_date']}", expanded=False):
                 fig_ep = make_overview_chart(ep_window, bands, height=280)
-                # Add the episode shading
                 single_ep = episodes_df[episodes_df["episode_id"] == ep["episode_id"]]
                 fig_ep = add_episode_overlays(fig_ep, single_ep)
                 st.plotly_chart(fig_ep, use_container_width=True)
@@ -3508,8 +3174,7 @@ with tab_medications:
     st.markdown("## Medication Log")
     st.caption(
         "Log medication change events here — started, increased, decreased, stopped. "
-        "You only need to log **changes**, not daily doses. "
-        "Changes appear as markers on the domain score charts."
+        "You only need to log **changes**, not daily doses."
     )
 
     if not safe_worksheet(MED_LOG_TAB):
@@ -3518,7 +3183,6 @@ with tab_medications:
             "Create a tab with that exact name and entries will save correctly."
         )
 
-    # ── Current medications ────────────────────────────────
     st.markdown("### Currently active medications")
     current_meds = get_current_medications(med_log_df)
     if current_meds.empty:
@@ -3535,7 +3199,6 @@ with tab_medications:
 
     st.divider()
 
-    # ── Add new event ──────────────────────────────────────
     st.markdown("### Log a medication change")
     with st.form("med_log_form", clear_on_submit=True):
         import datetime as _med_dt
@@ -3572,7 +3235,6 @@ with tab_medications:
 
     st.divider()
 
-    # ── Full history ───────────────────────────────────────
     st.markdown("### Full change history")
     if med_log_df.empty:
         st.info("No events logged yet.")
@@ -3595,7 +3257,6 @@ with tab_medications:
 
     st.divider()
 
-    # ── Chart: domain scores with medication overlays ──────
     st.markdown("### Domain scores with medication change markers")
     if not daily_filtered.empty and not med_log_df.empty:
         fig_med = go.Figure()
@@ -3634,10 +3295,7 @@ with tab_cycle:
     st.markdown("## Menstrual Cycle Tracking")
     st.caption(
         "Log period start, period end, and ovulation dates. "
-        "Events appear as markers on the domain score charts. "
-        "Over time this data will show whether your scores cluster "
-        "around particular cycle phases — the luteal phase in particular "
-        "is a known vulnerability window in bipolar."
+        "Events appear as markers on the domain score charts."
     )
 
     if not safe_worksheet(CYCLE_LOG_TAB):
@@ -3646,7 +3304,6 @@ with tab_cycle:
             "in your Google Sheet and events will save correctly."
         )
 
-    # ── Current cycle status ───────────────────────────────
     import datetime as _cyc_dt
     today = _cyc_dt.date.today()
     current_phase = compute_cycle_phase(today, cycle_log_df)
@@ -3665,7 +3322,6 @@ with tab_cycle:
 
     st.divider()
 
-    # ── Log new event ──────────────────────────────────────
     st.markdown("### Log a cycle event")
     with st.form("cycle_log_form", clear_on_submit=True):
         cy1, cy2 = st.columns(2)
@@ -3684,7 +3340,6 @@ with tab_cycle:
 
     st.divider()
 
-    # ── History ────────────────────────────────────────────
     st.markdown("### Event history")
     if cycle_log_df.empty:
         st.info("No cycle events logged yet.")
@@ -3704,7 +3359,6 @@ with tab_cycle:
 
     st.divider()
 
-    # ── Chart with cycle overlays ──────────────────────────
     st.markdown("### Domain scores with cycle markers")
     if not daily_filtered.empty:
         fig_cy = go.Figure()
@@ -3739,13 +3393,7 @@ with tab_cycle:
 
     st.divider()
 
-    # ── Phase analysis ─────────────────────────────────────
     st.markdown("### Mean scores by cycle phase")
-    st.caption(
-        "Once enough cycle events are logged, this table shows your mean domain "
-        "scores during each phase. If luteal or late luteal scores are consistently "
-        "higher, that confirms a cycle-phase vulnerability pattern."
-    )
     phase_df = compute_phase_domain_means(daily_df, cycle_log_df)
     if phase_df.empty:
         st.info("Not enough data yet — log more cycle events and continue daily tracking.")
@@ -3764,7 +3412,6 @@ with tab_export:
     with exp_col1:
         export_window = st.slider("Days to cover", 7, 90, 7, 7, key="export_window")
 
-    # Overview chart for the export period
     import datetime as _exp_chart_dt
     exp_start = _exp_chart_dt.date.today() - _exp_chart_dt.timedelta(days=export_window)
     exp_daily = daily_df[daily_df["date"] >= exp_start] if not daily_df.empty else daily_df
@@ -3784,14 +3431,12 @@ with tab_export:
                 marker=dict(size=5),
                 hovertemplate=f"{d}: %{{y:.1f}}%<extra></extra>",
             ))
-        # Well band ceilings
         for d in DOMAINS:
             b = bands.get(d, DEFAULT_BASELINE_BANDS.get(d, {}))
             fig_exp.add_hline(
                 y=b.get("well", 20), line_dash="dot",
                 line_color="rgba(52,199,89,0.4)", line_width=1,
             )
-        # Episode and medication overlays
         fig_exp = add_episode_overlays(fig_exp, episodes_df)
         if not med_log_df.empty:
             exp_med = med_log_df[med_log_df["date"] >= exp_start]
@@ -3805,10 +3450,6 @@ with tab_export:
             plot_bgcolor="white", paper_bgcolor="white",
         )
         st.plotly_chart(fig_exp, use_container_width=True)
-        st.caption(
-            "Dotted green lines = Well band ceiling for each domain. "
-            "This chart is for your reference — copy it as a screenshot to share with your clinician."
-        )
 
     report = generate_clinician_report(
         daily=daily_df,
@@ -3827,11 +3468,9 @@ with tab_export:
         window_days=export_window,
     )
 
-    # Rendered preview
     with st.expander("Preview (rendered)", expanded=True):
         st.markdown(report)
 
-    # Raw copyable text
     st.markdown("### Copy-ready text")
     st.text_area(
         "Select all and copy (Ctrl+A, Ctrl+C)",
@@ -3854,7 +3493,6 @@ with tab_baseline:
         ep_exclusion_note = f" Episode periods are excluded ({n_ep_days} labelled episode days removed)."
     st.caption(
         f"Derived from days where **all** domains were in the Well band **and at least one snapshot was submitted**. "
-        f"Snapshots are used because they reflect point-in-time state more accurately than retrospective reviews. "
         f"Uses the most recent **{pb_window}** such days. "
         f"Requires **{PERSONAL_BASELINE_MIN_DAYS}+** days to be reliable.{ep_exclusion_note}"
     )
@@ -3879,8 +3517,6 @@ with tab_baseline:
 
     st.divider()
     st.markdown("### Score history with overlays")
-    st.caption("Green/yellow/orange/red/purple bands = Well/Watch/Caution/Warning/Critical. "
-               "Blue line = personal baseline mean. Blue shading = ±1 SD. Orange triangle = movement alert.")
     if not daily_filtered.empty:
         for domain in selected_domains:
             st.plotly_chart(
@@ -3923,15 +3559,8 @@ with tab_questions:
         "Click **📈 Chart** on any question to see how your answers have changed over time."
     )
 
-    # ── helper: build a per-question answer chart ──────────
     def _question_chart(code: str, meta: dict, daily: pd.DataFrame,
                         wide: pd.DataFrame, episodes: pd.DataFrame) -> go.Figure:
-        """
-        Return a Plotly figure showing raw answer values over time for one question.
-        - scale_1_5 / numeric  → line chart on daily (first-of-day) values
-        - boolean_yes_no       → stacked bar: Yes / No count per day
-        - text                 → not charted (handled separately)
-        """
         rtype = meta.get("rtype", "")
 
         if rtype == "text":
@@ -3974,7 +3603,6 @@ with tab_questions:
             fig = add_episode_overlays(fig, episodes)
             return fig
 
-        # scale_1_5 or numeric — use daily (first of day) values
         if code not in daily.columns:
             return go.Figure()
 
@@ -3984,11 +3612,8 @@ with tab_questions:
 
         date_strs = plot_daily["date"].astype(str).tolist()
         values    = plot_daily[code].tolist()
-
-        # Rolling average
         rolling = plot_daily[code].rolling(7, min_periods=1).mean().tolist()
 
-        # y-axis range
         if rtype == "scale_1_5":
             y_range = [0.5, 5.5]
             y_title = "Rating (1–5)"
@@ -4001,11 +3626,8 @@ with tab_questions:
             tick_text = None
 
         fig = go.Figure()
-
-        # Episode shading behind everything
         fig = add_episode_overlays(fig, episodes)
 
-        # 7-day rolling average
         fig.add_trace(go.Scatter(
             x=date_strs, y=rolling, mode="lines",
             name="7d avg",
@@ -4013,7 +3635,6 @@ with tab_questions:
             hovertemplate="7d avg: %{y:.2f}<extra></extra>",
         ))
 
-        # Raw values
         domain_list = meta.get("domains", [])
         colour = DOMAIN_COLOURS.get(domain_list[0], "#1C7EF2") if domain_list else "#1C7EF2"
         fig.add_trace(go.Scatter(
@@ -4042,7 +3663,6 @@ with tab_questions:
         )
         return fig
 
-    # ── group display config ────────────────────────────────
     GROUP_LABELS = {
         "depression":   "🔵 Depression",
         "mania":        "🟠 Mania",
@@ -4074,11 +3694,9 @@ with tab_questions:
     by_code = _catalog_by_code()
     cat     = catalog_df()
 
-    # Track which question is charted via session state
     if "q_chart_code" not in st.session_state:
         st.session_state["q_chart_code"] = None
 
-    # Search box
     q_search = st.text_input(
         "Search questions", placeholder="e.g. sleep, mood, agitation…",
         key="q_search"
@@ -4107,29 +3725,22 @@ with tab_questions:
                 role  = q_row.get("meta_role", None)
                 domains = q_row.get("domains", [])
                 if isinstance(domains, str):
-                    # catalog_df serialises lists as strings sometimes
                     import ast
                     try:
                         domains = ast.literal_eval(domains)
                     except Exception:
                         domains = []
 
-                # ── Question header row ──────────────────────
                 hc1, hc2 = st.columns([5, 1])
                 with hc1:
                     st.markdown(f"**{text}**")
-                    # Metadata badges in one line
                     badges = []
                     badges.append(f"`{RTYPE_LABELS.get(rtype, rtype)}`")
                     if domains:
                         for d in domains:
-                            colour_hex = BAND_COLOUR_HEX.get(
-                                classify_score(50, d, bands), "#888"
-                            )
                             badges.append(f"`{d}`")
                     if role:
                         badges.append(f"`{ROLE_BADGES.get(role, role)}`")
-                    # Weight info
                     base_w = DEFAULT_WEIGHTS.get(code)
                     if base_w is not None:
                         badges.append(f"weight `{base_w}`")
@@ -4146,12 +3757,10 @@ with tab_questions:
                             else:
                                 st.session_state["q_chart_code"] = code
 
-                # ── Chart (shown inline when this question is active) ──
                 if st.session_state["q_chart_code"] == code:
                     meta_entry = by_code.get(code, {})
                     fig = _question_chart(code, meta_entry, daily_filtered, wide_df, episodes_df)
                     if fig.data or fig.layout.shapes:
-                        # Summary stats
                         if code in daily_filtered.columns and rtype != "text":
                             vals = pd.to_numeric(daily_filtered[code], errors="coerce").dropna()
                             if not vals.empty and rtype == "boolean_yes_no":
@@ -4164,13 +3773,11 @@ with tab_questions:
                                 sc1.metric("Mean", f"{vals.mean():.2f}")
                                 sc2.metric("Peak", f"{vals.max():.0f}")
                                 sc3.metric("Days recorded", len(vals))
-                                # % of days answered at 4 or 5
                                 if rtype == "scale_1_5":
                                     pct_high = int((vals >= 4).mean() * 100)
                                     sc4.metric("% days rated 4–5", f"{pct_high}%")
                         st.plotly_chart(fig, use_container_width=True, key=f"qfig_{code}")
 
-                        # For boolean: show dates when it was Yes
                         if rtype == "boolean_yes_no" and code in wide_df.columns:
                             yes_dates = wide_df[wide_df[code] == True]["submitted_date"].unique()
                             if len(yes_dates):
@@ -4187,9 +3794,7 @@ with tab_questions:
 # ── DAILY MODEL ───────────────────────────────────────────
 with tab_daily:
     st.markdown("## Daily Models")
-    st.caption(
-        "Three separate models, each answering a different question about each day."
-    )
+    st.caption("Three separate models, each answering a different question about each day.")
 
     model_tab_snap, model_tab_review, model_tab_compare = st.tabs([
         "Snapshot Average", "Review", "Comparison"
@@ -4197,16 +3802,11 @@ with tab_daily:
 
     with model_tab_snap:
         st.markdown("### Snapshot model")
-        st.caption(
-            "Mean of all **Snapshot** submissions for each day. "
-            "Captures how the day felt in real time, averaged across however many "
-            "check-ins you did. More snapshots = more reliable average."
-        )
+        st.caption("Mean of all **Snapshot** submissions for each day.")
         snap_filtered = _apply_date_filter(snapshot_model_df) if not snapshot_model_df.empty else snapshot_model_df
         if snap_filtered.empty:
             st.info("No snapshot data in the selected date range.")
         else:
-            # Chart
             fig_snap = go.Figure()
             for d in selected_domains:
                 col = f"{d} Score %"
@@ -4228,9 +3828,8 @@ with tab_daily:
             )
             st.plotly_chart(fig_snap, use_container_width=True)
 
-            # Submission count context
             if "n_snapshots" in snap_filtered.columns:
-                st.caption("Number of snapshots per day (more = more reliable average):")
+                st.caption("Number of snapshots per day:")
                 st.bar_chart(snap_filtered.set_index("date")["n_snapshots"])
 
             with st.expander("Raw table"):
@@ -4238,12 +3837,7 @@ with tab_daily:
 
     with model_tab_review:
         st.markdown("### Review model")
-        st.caption(
-            "Your retrospective **Review** submission for each day — either "
-            "'Review of today (evening)' attributed to that day, or "
-            "'Review of yesterday' attributed to the previous day. "
-            "This is your considered overall judgment of how a day went."
-        )
+        st.caption("Your retrospective **Review** submission for each day.")
         rev_filtered = _apply_date_filter(review_model_df) if not review_model_df.empty else review_model_df
         if rev_filtered.empty:
             st.info("No review data in the selected date range.")
@@ -4274,18 +3868,10 @@ with tab_daily:
 
     with model_tab_compare:
         st.markdown("### Snapshot vs review comparison")
-        st.caption(
-            "For each day with both a snapshot average and a review, this shows the "
-            "difference: **Review − Snapshot average**. "
-            "Positive = you rated the day worse in retrospect than it felt at the time. "
-            "Negative = you rated the day better in retrospect than it felt at the time. "
-            "A consistent pattern in either direction is clinically meaningful."
-        )
         comp_filtered = _apply_date_filter(comparison_df) if not comparison_df.empty else comparison_df
         if comp_filtered.empty:
             st.info("Not enough data yet — need days with both snapshots and a review.")
         else:
-            # Difference chart per domain
             diff_cols = [f"{d} Difference (Review−Snapshot)" for d in DOMAINS
                          if f"{d} Difference (Review−Snapshot)" in comp_filtered.columns]
             if diff_cols:
@@ -4311,7 +3897,6 @@ with tab_daily:
                 )
                 st.plotly_chart(fig_comp, use_container_width=True)
 
-            # Summary statistics
             st.markdown("### Summary")
             summary_rows = []
             for d in DOMAINS:
@@ -4350,29 +3935,21 @@ with tab_data:
     st.markdown("### Question catalog")
     display_cols = ["code","text","group","rtype","polarity","domains","score_in_snapshot","score_in_daily","order"]
     cat_display = catalog_df()
-    # Add meta_role column if present
     if "meta_role" in cat_display.columns:
         display_cols = ["code","text","group","meta_role","rtype","polarity","domains","order"]
     st.dataframe(cat_display[[c for c in display_cols if c in cat_display.columns]], use_container_width=True)
 
     st.divider()
     st.markdown("### Meta question system")
-    st.caption(
-        "Meta questions operate at two levels: **force multipliers** amplify all domain "
-        "scores after calculation; **contributors** feed directly into domain scores; "
-        "**insight-inverse** items contribute normally to Depression/Mania/Mixed but are "
-        "**inverted in Psychosis** (low concern/insight = higher psychosis risk)."
-    )
-
     meta_ref = []
     for q in QUESTION_CATALOG:
         role = q.get("meta_role")
         if not role:
             continue
         if role == "force_multiplier":
-            description = f"Force multiplier — amplifies all domain scores ×1.0–×{META_MULTIPLIER_MAX}. Not a domain contributor."
+            description = f"Force multiplier — amplifies all domain scores ×1.0–×{META_MULTIPLIER_MAX}."
         elif role == "insight_inverse_psychosis":
-            description = "Insight item — contributes normally to Dep/Mania/Mixed. INVERTED in Psychosis (low insight = higher risk)."
+            description = "Insight item — contributes normally to Dep/Mania/Mixed. INVERTED in Psychosis."
         elif role == "contributor":
             description = f"Direct contributor to: {', '.join(q.get('domains', []))}"
         else:
@@ -4385,14 +3962,6 @@ with tab_data:
             "Description": description,
         })
     st.dataframe(pd.DataFrame(meta_ref), use_container_width=True, hide_index=True)
-
-    st.caption(
-        f"**Multiplier formula:** composite of {', '.join(FORCE_MULTIPLIER_CODES)} "
-        f"→ mean normalised score (0–100) → mapped to ×1.0–×{META_MULTIPLIER_MAX}. "
-        f"A score of 50/100 on all three items → multiplier of "
-        f"×{1.0 + 0.5 * (META_MULTIPLIER_MAX - 1.0):.2f}. "
-        f"All domain scores capped at 100 after multiplication."
-    )
 
     st.divider()
     st.markdown("### Sleep weight multipliers by domain")
