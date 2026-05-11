@@ -1348,18 +1348,24 @@ def build_warnings(daily: pd.DataFrame, snapshots: pd.DataFrame, bands: dict,
         deltas = {d: float(row.get(f"{d} Score % Delta", 0) or 0) for d in DOMAINS}
         domain_bands = {d: classify_score(scores[d], d, bands) for d in DOMAINS}
 
-        mixed_elevated = domain_bands["Mixed"] in ("caution", "warning", "critical")
+        mood_domains = ["Depression", "Mania", "Mixed"]
+        elevated_mood = [
+            d for d in mood_domains
+            if domain_bands[d] in ("caution", "warning", "critical")
+        ]
+        primary_mood_domain = (
+            max(elevated_mood, key=lambda d: scores[d]) if elevated_mood else None
+        )
 
         for domain in DOMAINS:
             score = scores[domain]
             delta = deltas[domain]
             band  = domain_bands[domain]
 
-            # Determine whether this domain should be suppressed as a
-            # standalone warning because Mixed already captures it
             suppress_as_primary = (
-                mixed_elevated
-                and domain in ("Depression", "Mania")
+                primary_mood_domain is not None
+                and domain in mood_domains
+                and domain != primary_mood_domain
                 and band in ("caution", "warning", "critical")
             )
 
